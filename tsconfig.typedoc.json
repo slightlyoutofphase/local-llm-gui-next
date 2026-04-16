@@ -1,0 +1,21 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["bun", "node"]
+  },
+  "include": [
+    "next-env.d.ts",
+    ".next/types/**/*.ts",
+    ".next/dev/types/**/*.ts",
+    "src/app/**/*.ts",
+    "src/app/**/*.tsx",
+    "src/backend/**/*.ts",
+    "src/backend/**/*.d.ts",
+    "src/components/**/*.ts",
+    "src/components/**/*.tsx",
+    "src/generated/**/*.ts",
+    "src/lib/**/*.ts",
+    "src/store/**/*.ts"
+  ],
+  "exclude": ["node_modules", "src/test", "out", "dist"]
+}

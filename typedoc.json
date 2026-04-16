@@ -1,0 +1,21 @@
+{
+  "entryPoints": ["src/app", "src/backend", "src/components", "src/lib", "src/store"],
+  "entryPointStrategy": "expand",
+  "out": "docs",
+  "tsconfig": "tsconfig.typedoc.json",
+  "exclude": [
+    "**/*.d.ts",
+    "**/*.test.ts",
+    "**/*.test.tsx",
+    "**/*.spec.ts",
+    "**/*.spec.tsx",
+    "src/generated/**",
+    "src/components/ui/**"
+  ],
+  "excludeExternals": true,
+  "excludePrivate": true,
+  "excludeProtected": true,
+  "excludeInternal": true,
+  "disableSources": true,
+  "hideGenerator": true
+}

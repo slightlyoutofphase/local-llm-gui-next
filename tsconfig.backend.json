@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["esnext"],
+    "types": ["bun", "node"]
+  },
+  "include": [
+    "src/backend/**/*.ts",
+    "src/backend/**/*.d.ts",
+    "src/generated/**/*.ts",
+    "src/test/backend/**/*.ts"
+  ],
+  "exclude": ["node_modules", "src/app", "src/components", "src/store", "out", "dist"]
+}
