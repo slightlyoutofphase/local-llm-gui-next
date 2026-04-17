@@ -208,8 +208,7 @@ export class AppDatabase {
     this.createSchema();
     this.ensurePendingAttachmentMessageIds();
     this.ensurePendingAttachmentLifecycleColumns();
-    this.ensureMessageAttachmentIndex();
-    this.ensureSearchIndexVersion();
+    void this.scheduleDeferredSchemaMaintenance();
   }
 
   /**
@@ -1836,6 +1835,18 @@ export class AppDatabase {
     });
   }
 
+  /** Schedules expensive schema maintenance asynchronously after startup. */
+  private async scheduleDeferredSchemaMaintenance(): Promise<void> {
+    await Promise.resolve();
+
+    try {
+      this.ensureMessageAttachmentIndex();
+      this.ensureSearchIndexVersion();
+    } catch (error) {
+      console.error("Deferred database schema maintenance failed:", error);
+    }
+  }
+
   /** Repairs legacy search-index contents when the derived schema changes. */
   private ensureSearchIndexVersion(): void {
     const versionRow = this.database
@@ -1918,15 +1929,11 @@ export class AppDatabase {
       )
       .run(chatId, chatRow.title);
 
-    const messageRows = this.database
+    this.database
       .query(
-        "SELECT content, reasoning_content FROM messages WHERE chat_id = ? ORDER BY sequence_number ASC",
+        "INSERT INTO chat_search_fts (chat_id, title, message_content, reasoning_content) SELECT chat_id, '', content, COALESCE(reasoning_content, '') FROM messages WHERE chat_id = ? ORDER BY sequence_number ASC",
       )
-      .all(chatId) as Array<{ content: string; reasoning_content: string | null }>;
-
-    for (const messageRow of messageRows) {
-      this.indexMessageForSearch(chatId, messageRow.content, messageRow.reasoning_content ?? "");
-    }
+      .run(chatId);
   }
 
   /** Removes all derived search rows associated with a chat. */

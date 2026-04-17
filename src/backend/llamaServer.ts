@@ -54,6 +54,23 @@ type PrepareChatCompletionRequestBodyResult =
   | { body: Record<string, unknown> }
   | { errorResponse: Response };
 
+const SUPPORTED_CHAT_COMPLETION_FIELDS = new Set<string>([
+  "cache_prompt",
+  "messages",
+  "stream",
+  "n_predict",
+  "temperature",
+  "top_p",
+  "top_k",
+  "min_p",
+  "presence_penalty",
+  "repeat_penalty",
+  "stop",
+  "max_tokens",
+  "logit_bias",
+  "user",
+]);
+
 /** Priority level for managed requests — `"foreground"` preempts `"background"`. */
 type ManagedRequestPriority = "background" | "foreground";
 
@@ -591,30 +608,38 @@ export class LlamaServerManager {
     }
 
     if (this.activeRequestAbortController) {
-      if (requestPriority === "foreground" && this.activeRequestPriority === "background") {
+      const activePriority = this.activeRequestPriority;
+      const activeChatId = this.activeRequestChatId;
+
+      if (requestPriority === "foreground" && activePriority === "background") {
         this.debugLogService.serverLog(
           "Canceling the active background llama-server request to prioritize foreground work.",
         );
-        const backgroundAbortController = this.activeRequestAbortController;
 
+        const backgroundAbortController = this.activeRequestAbortController;
         backgroundAbortController.abort();
         this.clearActiveController(backgroundAbortController);
-      } else if (requestPriority === "foreground" && this.activeRequestPriority === "foreground") {
-        this.debugLogService.verboseServerLog(
-          `Rejecting ${endpoint} because another foreground request is already in progress.`,
-        );
-        return Response.json(
-          { error: "Another generation request is already in progress." },
-          {
-            status: 409,
-          },
-        );
       } else {
+        const activeState =
+          activePriority === "foreground"
+            ? "a foreground generation"
+            : "a background llama-server request";
+        const errorMessage =
+          requestPriority === "foreground"
+            ? "Another generation request is already in progress."
+            : "A llama-server request is already in progress; retry after the current request completes.";
+
         this.debugLogService.verboseServerLog(
-          `Rejecting ${endpoint} because another generation request is already in progress.`,
+          `Rejecting ${endpoint} because ${activeState} is already in progress.`,
         );
+
         return Response.json(
-          { error: "Another generation request is already in progress." },
+          {
+            activeChatId,
+            error: errorMessage,
+            retryable: true,
+            state: activePriority === "foreground" ? "running" : "busy",
+          },
           {
             status: 409,
           },
@@ -770,15 +795,24 @@ export class LlamaServerManager {
     delete sanitizedBody["chatId"];
     delete sanitizedBody["chat_template_kwargs"];
     delete sanitizedBody["json_schema"];
-    delete sanitizedBody["min_p"];
-    delete sanitizedBody["n_predict"];
-    delete sanitizedBody["presence_penalty"];
-    delete sanitizedBody["repeat_penalty"];
     delete sanitizedBody["response_format"];
-    delete sanitizedBody["stop"];
-    delete sanitizedBody["temperature"];
-    delete sanitizedBody["top_k"];
-    delete sanitizedBody["top_p"];
+
+    const unsupportedKeys = Object.keys(sanitizedBody).filter(
+      (key) => !SUPPORTED_CHAT_COMPLETION_FIELDS.has(key),
+    );
+
+    if (unsupportedKeys.length > 0) {
+      return {
+        errorResponse: Response.json(
+          {
+            error: `Unsupported chat-completion request fields: ${unsupportedKeys.join(", ")}.`,
+          },
+          {
+            status: 400,
+          },
+        ),
+      };
+    }
 
     const systemPrompt = this.activeSystemPromptPreset?.systemPrompt.trim();
     const normalizedMessages = await this.normalizeChatMessages(rawRequestMessages);
@@ -807,11 +841,28 @@ export class LlamaServerManager {
     }
 
     const nextBody: Record<string, unknown> = {
-      ...sanitizedBody,
-      ...(shouldCachePrompt ? { cache_prompt: true } : {}),
       messages: requestMessages,
       stream: sanitizedBody["stream"] === true,
+      ...(shouldCachePrompt ? { cache_prompt: true } : {}),
     };
+
+    for (const field of [
+      "n_predict",
+      "temperature",
+      "top_p",
+      "top_k",
+      "min_p",
+      "presence_penalty",
+      "repeat_penalty",
+      "stop",
+      "max_tokens",
+      "logit_bias",
+      "user",
+    ] as const) {
+      if (sanitizedBody[field] !== undefined) {
+        nextBody[field] = sanitizedBody[field];
+      }
+    }
 
     if (!settings) {
       return { body: nextBody };

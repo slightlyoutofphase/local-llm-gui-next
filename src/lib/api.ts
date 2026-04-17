@@ -21,6 +21,7 @@ const JSON_REQUEST_TIMEOUT_MS = 30_000;
 
 interface TimedRequestInit extends RequestInit {
   timeoutMs?: number;
+  retryOnIdempotentRequest?: boolean;
 }
 
 /**
@@ -882,11 +883,15 @@ export function subscribeToJsonSse<TPayload>(
 }
 
 /** Issues a JSON request and returns the parsed response, throwing on non-OK status. */
-async function requestJson<TPayload>(input: string, init?: TimedRequestInit): Promise<TPayload> {
-  const { timeoutMs = JSON_REQUEST_TIMEOUT_MS, ...fetchInit } = init ?? {};
+export async function requestJson<TPayload>(input: string, init?: TimedRequestInit): Promise<TPayload> {
+  const { timeoutMs = JSON_REQUEST_TIMEOUT_MS, retryOnIdempotentRequest, ...fetchInit } = init ?? {};
   const headers = new Headers(fetchInit.headers);
   const isIdempotent = !fetchInit.method || fetchInit.method.toUpperCase() === "GET";
-  const maxAttempts = isIdempotent ? 3 : 1;
+  const hasExplicitIdempotencyHeader =
+    headers.has("Idempotency-Key") || headers.has("X-Idempotency-Key");
+  const isSafeForRetry =
+    isIdempotent || retryOnIdempotentRequest === true || hasExplicitIdempotencyHeader;
+  const maxAttempts = isSafeForRetry ? 3 : 1;
   const baseDelayMs = 150;
 
   if (typeof fetchInit.body === "string" && !headers.has("Content-Type")) {
@@ -914,14 +919,14 @@ async function requestJson<TPayload>(input: string, init?: TimedRequestInit): Pr
       const responseError = new Error(await readErrorResponseMessage(response));
       const retryableStatus = [502, 503, 504];
 
-      if (isIdempotent && attempt < maxAttempts && retryableStatus.includes(response.status)) {
+      if (isSafeForRetry && attempt < maxAttempts && retryableStatus.includes(response.status)) {
         await delay(baseDelayMs * 2 ** (attempt - 1));
         continue;
       }
 
       throw responseError;
     } catch (error) {
-      if (attempt < maxAttempts && isIdempotent && isRetryableRequestError(error)) {
+      if (attempt < maxAttempts && isSafeForRetry && isRetryableRequestError(error)) {
         await delay(baseDelayMs * 2 ** (attempt - 1));
         continue;
       }

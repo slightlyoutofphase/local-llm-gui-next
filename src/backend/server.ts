@@ -2075,6 +2075,10 @@ function getTrustedWriteOrigins(): Set<string> {
  * Parses the request body as a JSON object, rejecting malformed JSON
  * or non-object payloads with a 400 response.
  *
+ * The backend currently expects strict object-shaped JSON for write routes.
+ * Arrays and other non-object values are intentionally rejected to keep the
+ * API contract explicit and to prevent ambiguous payload handling.
+ *
  * @param request - Incoming HTTP request.
  * @param maxBytes - Maximum request body size in bytes for this route.
  * @returns Parsed JSON object.
@@ -2147,11 +2151,12 @@ async function readRequestTextWithLimit(request: Request, maxBytes: number): Pro
 }
 
 /**
- * Rejects browser-originated write requests unless they come from the
- * application origin or the configured development frontend origin.
+ * Rejects write requests from untrusted origins unless a trusted secret
+ * is configured. Non-browser clients must supply the trusted secret when
+ * browser-origin headers are unavailable.
  *
  * @param request - Incoming HTTP request.
- * @throws {HttpError} When a browser-originated write targets the backend from an untrusted origin.
+ * @throws {HttpError} When a write targets the backend from an untrusted origin.
  */
 function assertTrustedWriteRequest(request: Request): void {
   const trustedWriteSecret = process.env["LOCAL_LLM_GUI_WRITE_SECRET"]?.trim();
@@ -2182,13 +2187,22 @@ function assertTrustedWriteRequest(request: Request): void {
     allowedOrigins.add(trustedOrigin);
   }
 
-  if (!originHeader) {
-    throw new HttpError(403, "Write requests require a trusted origin or secret.");
+  if (originHeader) {
+    if (!allowedOrigins.has(originHeader)) {
+      throw new HttpError(403, "Cross-origin write requests are not allowed.");
+    }
+
+    return;
   }
 
-  if (!allowedOrigins.has(originHeader)) {
-    throw new HttpError(403, "Cross-origin write requests are not allowed.");
+  if (fetchSiteHeader === "same-origin" || fetchSiteHeader === "same-site") {
+    return;
   }
+
+  throw new HttpError(
+    403,
+    "Write requests from non-browser clients require a trusted secret or explicit browser-origin headers.",
+  );
 }
 
 /**

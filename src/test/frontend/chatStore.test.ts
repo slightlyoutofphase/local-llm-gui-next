@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { refreshChatIfMessageMissing, shouldApplyLoadedChatResponse } from "../../store/chatStore";
+import {
+  preserveDraftsWhenSwitchingChats,
+  refreshChatIfMessageMissing,
+  shouldApplyLoadedChatResponse,
+} from "../../store/chatStore";
 
 test("shouldApplyLoadedChatResponse rejects stale chat loads after the store advances", () => {
   expect(
@@ -75,6 +79,30 @@ test("refreshChatIfMessageMissing returns true when the target message is alread
   };
 
   expect(await refreshChatIfMessageMissing("chat-1", "msg-1", getState, setState)).toBe(true);
+});
+
+test("preserveDraftsWhenSwitchingChats saves current composer and attachments before switching chats", () => {
+  const pendingAttachment = {
+    file: new File(["hello"], "hello.txt", { type: "text/plain" }),
+    fileName: "hello.txt",
+    id: "attachment-1",
+    kind: "image",
+    mimeType: "image/png",
+    size: 5,
+  };
+
+  const result = preserveDraftsWhenSwitchingChats(
+    "chat-1",
+    "chat-2",
+    "Draft text",
+    [pendingAttachment],
+    { "chat-1": "Old draft" },
+    { "chat-2": [pendingAttachment] },
+  );
+
+  expect(result.draftsByChatId).toEqual({ "chat-1": "Draft text" });
+  expect(result.restoredComposerValue).toBe("");
+  expect(result.restoredPendingAttachments).toEqual([pendingAttachment]);
 });
 
 test("refreshChatIfMessageMissing fetches chat history when the target message is missing", async () => {

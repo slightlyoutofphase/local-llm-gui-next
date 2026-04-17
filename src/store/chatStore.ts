@@ -169,6 +169,46 @@ export interface ChatStoreState {
   synchronizeFromUiCache: (uiCache: UiCacheState) => Promise<void>;
 }
 
+export function preserveDraftsWhenSwitchingChats(
+  previousChatId: string | null,
+  nextChatId: string,
+  composerValue: string,
+  pendingAttachments: PendingAttachment[],
+  draftsByChatId: Record<string, string>,
+  pendingAttachmentDraftsByChatId: Record<string, PendingAttachment[]>,
+): {
+  draftsByChatId: Record<string, string>;
+  pendingAttachmentDraftsByChatId: Record<string, PendingAttachment[]>;
+  restoredComposerValue: string;
+  restoredPendingAttachments: PendingAttachment[];
+} {
+  const nextDraftsByChatId = { ...draftsByChatId };
+  const nextPendingAttachmentDraftsByChatId = {
+    ...pendingAttachmentDraftsByChatId,
+  };
+
+  if (previousChatId) {
+    if (composerValue.trim().length > 0) {
+      nextDraftsByChatId[previousChatId] = composerValue;
+    } else {
+      delete nextDraftsByChatId[previousChatId];
+    }
+
+    if (pendingAttachments.length > 0) {
+      nextPendingAttachmentDraftsByChatId[previousChatId] = pendingAttachments;
+    } else {
+      delete nextPendingAttachmentDraftsByChatId[previousChatId];
+    }
+  }
+
+  return {
+    draftsByChatId: nextDraftsByChatId,
+    pendingAttachmentDraftsByChatId: nextPendingAttachmentDraftsByChatId,
+    restoredComposerValue: nextDraftsByChatId[nextChatId] ?? "",
+    restoredPendingAttachments: nextPendingAttachmentDraftsByChatId[nextChatId] ?? [],
+  };
+}
+
 /**
  * Provides the frontend chat, message, and debug-log Zustand store.
  */
@@ -278,31 +318,23 @@ export const useChatStore = create<ChatStoreState>((set, get) => ({
     const previousChatId = currentState.activeChatId;
     const currentDraft = currentState.composerValue;
 
-    const nextDraftsByChatId = { ...currentState.draftsByChatId };
-    const nextPendingAttachmentDraftsByChatId = {
-      ...currentState.pendingAttachmentDraftsByChatId,
-    };
-
-    if (previousChatId) {
-      if (currentDraft.trim().length > 0) {
-        nextDraftsByChatId[previousChatId] = currentDraft;
-      } else {
-        delete nextDraftsByChatId[previousChatId];
-      }
-
-      if (currentState.pendingAttachments.length > 0) {
-        nextPendingAttachmentDraftsByChatId[previousChatId] = currentState.pendingAttachments;
-      } else {
-        delete nextPendingAttachmentDraftsByChatId[previousChatId];
-      }
-    }
-
-    const restoredDraft = nextDraftsByChatId[chatId] ?? "";
-    const restoredPendingAttachments = nextPendingAttachmentDraftsByChatId[chatId] ?? [];
+    const {
+      draftsByChatId: nextDraftsByChatId,
+      pendingAttachmentDraftsByChatId: nextPendingAttachmentDraftsByChatId,
+      restoredComposerValue,
+      restoredPendingAttachments,
+    } = preserveDraftsWhenSwitchingChats(
+      previousChatId,
+      chatId,
+      currentDraft,
+      currentState.pendingAttachments,
+      currentState.draftsByChatId,
+      currentState.pendingAttachmentDraftsByChatId,
+    );
 
     set({
       activeChatId: chatId,
-      composerValue: restoredDraft,
+      composerValue: restoredComposerValue,
       draftsByChatId: nextDraftsByChatId,
       error: null,
       loadingChat: true,
@@ -1134,16 +1166,11 @@ async function runAssistantStream(options: {
 
   let assistantContent = "";
   let reasoningContent = "";
-  let streamingUpdateScheduled = false;
-  let streamingUpdateTimer:
-    | ReturnType<typeof requestAnimationFrame>
-    | ReturnType<typeof setTimeout>
-    | null = null;
+  let streamingUpdateTimer: number | ReturnType<typeof setTimeout> | null = null;
   let streamingUpdateCanceled = false;
   const structuredOutputSettings = getActiveStructuredOutputSettings(getState().modelContext);
 
   const cancelStreamingUpdate = (): void => {
-    streamingUpdateScheduled = false;
     streamingUpdateCanceled = true;
 
     if (streamingUpdateTimer !== null) {
@@ -1158,12 +1185,12 @@ async function runAssistantStream(options: {
   };
 
   const flushStreamingUpdate = (): void => {
+    streamingUpdateTimer = null;
+
     if (streamingUpdateCanceled) {
       return;
     }
 
-    streamingUpdateScheduled = false;
-    streamingUpdateTimer = null;
     updateStreamingMessage(chatId, streamingMessage.id, setState, {
       content: assistantContent,
       metadata: {
@@ -1173,17 +1200,14 @@ async function runAssistantStream(options: {
   };
 
   const scheduleStreamingUpdate = (): void => {
-    if (streamingUpdateScheduled || streamingUpdateCanceled) {
+    if (streamingUpdateCanceled || streamingUpdateTimer !== null) {
       return;
     }
 
-    streamingUpdateScheduled = true;
-
-    if (typeof requestAnimationFrame === "function") {
-      streamingUpdateTimer = requestAnimationFrame(flushStreamingUpdate);
-    } else {
-      streamingUpdateTimer = setTimeout(flushStreamingUpdate, 16);
-    }
+    streamingUpdateTimer =
+      typeof requestAnimationFrame === "function"
+        ? requestAnimationFrame(flushStreamingUpdate)
+        : setTimeout(flushStreamingUpdate, 16);
   };
 
   try {
@@ -1413,6 +1437,26 @@ async function synchronizeChatStoreFromUiCache(
   }
 
   if (uiCache.dbRevision === currentState.knownDbRevision) {
+    const activeChatStillKnown =
+      currentState.activeChatId === null ||
+      currentState.chats.some((chat) => chat.id === currentState.activeChatId);
+
+    if (!activeChatStillKnown) {
+      if (
+        uiCache.lastChatId &&
+        currentState.chats.some((chat) => chat.id === uiCache.lastChatId)
+      ) {
+        await getState().selectChat(uiCache.lastChatId);
+        return;
+      }
+
+      if (currentState.chats.length > 0) {
+        await getState().selectChat(currentState.chats[0].id);
+      }
+
+      return;
+    }
+
     if (
       uiCache.lastChatId &&
       uiCache.lastChatId !== currentState.activeChatId &&

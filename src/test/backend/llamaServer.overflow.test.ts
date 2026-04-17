@@ -91,6 +91,29 @@ describe.serial("LlamaServerManager overflow handling", () => {
     expect(fetchCalled).toBe(false);
   });
 
+  test("returns a clear 409 payload when a concurrent llama-server request is already active", async () => {
+    setRuntimeSnapshot(manager, createReadySnapshot());
+    const activeAbortController = new AbortController();
+
+    Reflect.set(manager, "activeRequestAbortController", activeAbortController);
+    Reflect.set(manager, "activeRequestPriority", "foreground");
+    Reflect.set(manager, "activeRequestChatId", "chat-1");
+
+    const response = await (manager as any).proxyJsonRequest(
+      "/completion",
+      { prompt: "hello" },
+      new AbortController().signal,
+      "background",
+      null,
+    );
+    const payload = (await response.json()) as { activeChatId?: string; error?: string; retryable?: boolean };
+
+    expect(response.status).toBe(409);
+    expect(payload.activeChatId).toBe("chat-1");
+    expect(payload.error).toContain("retry after the current request completes");
+    expect(payload.retryable).toBe(true);
+  });
+
   test("drops middle messages before proxying when truncate-middle is selected", async () => {
     const capturedBodies: Record<string, unknown>[] = [];
 

@@ -7,6 +7,7 @@ import {
   getMediaAttachmentUrl,
   isRetryableRequestError,
   loadModel,
+  requestJson,
   subscribeToJsonSse,
 } from "../../lib/api";
 import { calculateRuntimeLoadTimeoutMs } from "../../lib/runtimeLoad";
@@ -86,6 +87,46 @@ test("requestJson attaches a timeout-backed abort signal to JSON requests", asyn
 
   expect(capturedSignal).not.toBeNull();
   expect(capturedSignal?.aborted).toBe(false);
+});
+
+test("requestJson retries POST requests with an explicit idempotency header", async () => {
+  let attempt = 0;
+  globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+    attempt += 1;
+
+    if (attempt === 1) {
+      return new Response("Service unavailable", { status: 503 });
+    }
+
+    return Response.json({ success: true });
+  }) as typeof fetch;
+
+  const result = await requestJson<{ success: boolean }>("/api/test", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Idempotency-Key": "retryable" },
+    body: JSON.stringify({ data: "ok" }),
+  });
+
+  expect(attempt).toBe(2);
+  expect(result.success).toBe(true);
+});
+
+test("requestJson does not retry unsafe POST requests by default", async () => {
+  let attempt = 0;
+  globalThis.fetch = (async () => {
+    attempt += 1;
+    return new Response("Service unavailable", { status: 503 });
+  }) as typeof fetch;
+
+  await expect(
+    requestJson<{ success: boolean }>("/api/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ data: "ok" }),
+    }),
+  ).rejects.toThrow();
+
+  expect(attempt).toBe(1);
 });
 
 test("getChats forwards an explicit abort signal when provided", async () => {
