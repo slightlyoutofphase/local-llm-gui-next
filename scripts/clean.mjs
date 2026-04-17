@@ -1,6 +1,6 @@
 import { rm } from "node:fs/promises";
 
-const buildArtifactPaths = [".next", "out", "dist"];
+const buildArtifactPaths = [".next", "out", "dist", "docs", ".tmp-compiled-smoke", ".playwright", ".tmp-tests", "test-results"];
 
 await Promise.all(
   buildArtifactPaths.map(async (artifactPath) => {

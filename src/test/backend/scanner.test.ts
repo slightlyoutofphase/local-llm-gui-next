@@ -146,7 +146,7 @@ describe.serial("ModelScanner", () => {
     const systemPresets = database.listSystemPromptPresets(model.id);
     const loadPresets = database.listLoadInferencePresets(model.id);
 
-    expect(systemPresets.length).toBeGreaterThan(0);
-    expect(loadPresets.length).toBeGreaterThan(0);
+    expect(systemPresets.length).toBe(0);
+    expect(loadPresets.length).toBe(0);
   });
 });

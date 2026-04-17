@@ -214,31 +214,45 @@ export function ChatApp(): ReactElement {
     () => findPendingToolConfirmation(activeMessages),
     [activeMessages],
   );
-  const selectedModel =
-    modelState.models.find((model) => model.id === modelState.selectedModelId) ?? null;
-  const activeRuntimeModel =
-    modelState.models.find((model) => model.id === modelState.runtime?.activeModelId) ?? null;
+  const selectedModel = useMemo(
+    () => modelState.models.find((model) => model.id === modelState.selectedModelId) ?? null,
+    [modelState.models, modelState.selectedModelId],
+  );
+  const activeRuntimeModel = useMemo(
+    () => modelState.models.find((model) => model.id === modelState.runtime?.activeModelId) ?? null,
+    [modelState.models, modelState.runtime?.activeModelId],
+  );
   const attachmentModel = activeRuntimeModel ?? selectedModel;
-  const selectedSystemPresets = selectedModel
-    ? (modelState.systemPresetsByModelId[selectedModel.id] ?? [])
-    : [];
-  const selectedLoadPresets = selectedModel
-    ? (modelState.loadPresetsByModelId[selectedModel.id] ?? [])
-    : [];
-  const selectedSystemPreset = selectedModel
-    ? (selectedSystemPresets.find(
-        (preset) => preset.id === modelState.selectedSystemPromptPresetIds[selectedModel.id],
-      ) ??
-      selectedSystemPresets[0] ??
-      null)
-    : null;
-  const selectedLoadPreset = selectedModel
-    ? (selectedLoadPresets.find(
-        (preset) => preset.id === modelState.selectedLoadPresetIds[selectedModel.id],
-      ) ??
-      selectedLoadPresets[0] ??
-      null)
-    : null;
+  const selectedSystemPresets = useMemo(
+    () => (selectedModel ? (modelState.systemPresetsByModelId[selectedModel.id] ?? []) : []),
+    [selectedModel, modelState.systemPresetsByModelId],
+  );
+  const selectedLoadPresets = useMemo(
+    () => (selectedModel ? (modelState.loadPresetsByModelId[selectedModel.id] ?? []) : []),
+    [selectedModel, modelState.loadPresetsByModelId],
+  );
+  const selectedSystemPreset = useMemo(
+    () =>
+      selectedModel
+        ? (selectedSystemPresets.find(
+            (preset) => preset.id === modelState.selectedSystemPromptPresetIds[selectedModel.id],
+          ) ??
+          selectedSystemPresets[0] ??
+          null)
+        : null,
+    [selectedModel, selectedSystemPresets, modelState.selectedSystemPromptPresetIds],
+  );
+  const selectedLoadPreset = useMemo(
+    () =>
+      selectedModel
+        ? (selectedLoadPresets.find(
+            (preset) => preset.id === modelState.selectedLoadPresetIds[selectedModel.id],
+          ) ??
+          selectedLoadPresets[0] ??
+          null)
+        : null,
+    [selectedModel, selectedLoadPresets, modelState.selectedLoadPresetIds],
+  );
   const filteredModels = useMemo(() => {
     const normalizedQuery = deferredModelSearch.trim().toLowerCase();
 

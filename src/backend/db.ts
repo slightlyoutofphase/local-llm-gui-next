@@ -222,7 +222,21 @@ export class AppDatabase {
       .query("SELECT value FROM meta WHERE key = 'db_revision'")
       .get() as { value: string } | null;
 
-    return revisionRow ? Number(revisionRow.value) : 0;
+    if (!revisionRow) {
+      throw new Error(
+        "The application database is missing required revision metadata. The database may be corrupt or incomplete.",
+      );
+    }
+
+    const revision = Number(revisionRow.value);
+
+    if (!Number.isFinite(revision) || revision < 0) {
+      throw new Error(
+        "The application database contains an invalid revision metadata value. The database may be corrupt.",
+      );
+    }
+
+    return revision;
   }
 
   /**
@@ -238,12 +252,16 @@ export class AppDatabase {
    *
    * @returns Persisted chat summaries.
    */
-  public listChats(): ChatSummary[] {
+  public listChats(page = 1, pageSize = 50): ChatSummary[] {
+    const boundedPage = Math.max(1, page);
+    const boundedPageSize = Math.min(100, Math.max(1, pageSize));
+    const offset = (boundedPage - 1) * boundedPageSize;
+
     const rows = this.database
       .query(
-        "SELECT id, title, created_at, updated_at, last_used_model_id FROM chats ORDER BY updated_at DESC",
+        "SELECT id, title, created_at, updated_at, last_used_model_id FROM chats ORDER BY updated_at DESC LIMIT ? OFFSET ?",
       )
-      .all() as ChatRow[];
+      .all(boundedPageSize, offset) as ChatRow[];
 
     return rows.map((row) => mapChatRow(row));
   }
@@ -252,13 +270,15 @@ export class AppDatabase {
    * Searches persisted chats by title and message content.
    *
    * @param query The user-entered search query.
+   * @param page The 1-based page to return.
+   * @param pageSize The maximum number of results per page.
    * @returns Matching chats ordered by last activity.
    */
-  public searchChats(query: string): ChatSummary[] {
+  public searchChats(query: string, page = 1, pageSize = 50): ChatSummary[] {
     const normalizedQuery = query.trim();
 
     if (normalizedQuery.length === 0) {
-      return this.listChats();
+      return [];
     }
 
     const ftsQuery = buildChatSearchFtsQuery(normalizedQuery);
@@ -267,13 +287,16 @@ export class AppDatabase {
       return [];
     }
 
+    const boundedPage = Math.max(1, page);
+    const boundedPageSize = Math.min(100, Math.max(1, pageSize));
+    const offset = (boundedPage - 1) * boundedPageSize;
     const scopedFtsQuery = `{title message_content reasoning_content} : ${ftsQuery}`;
 
     const rows = this.database
       .query(
-        "SELECT DISTINCT c.id, c.title, c.created_at, c.updated_at, c.last_used_model_id FROM chats c WHERE c.id IN (SELECT chat_id FROM chat_search_fts WHERE chat_search_fts MATCH ?) ORDER BY c.updated_at DESC",
+        "SELECT DISTINCT c.id, c.title, c.created_at, c.updated_at, c.last_used_model_id FROM chats c WHERE c.id IN (SELECT chat_id FROM chat_search_fts WHERE chat_search_fts MATCH ?) ORDER BY c.updated_at DESC LIMIT ? OFFSET ?",
       )
-      .all(scopedFtsQuery) as ChatRow[];
+      .all(scopedFtsQuery, boundedPageSize, offset) as ChatRow[];
 
     return rows.map((row) => mapChatRow(row));
   }
@@ -790,9 +813,11 @@ export class AppDatabase {
       return;
     }
 
-    for (const attachmentId of attachmentIds) {
-      this.database.query("DELETE FROM pending_attachments WHERE id = ?").run(attachmentId);
-    }
+    const placeholders = attachmentIds.map(() => "?").join(",");
+
+    this.database
+      .query(`DELETE FROM pending_attachments WHERE id IN (${placeholders})`)
+      .run(...attachmentIds);
   }
 
   /**
@@ -1861,31 +1886,17 @@ export class AppDatabase {
   private rebuildEntireSearchIndex(): void {
     this.database.query("DELETE FROM chat_search_fts").run();
 
-    const chatRows = this.database
-      .query("SELECT id, title FROM chats ORDER BY created_at ASC")
-      .all() as Array<{ id: string; title: string }>;
-
-    for (const chatRow of chatRows) {
-      this.database
-        .query(
-          "INSERT INTO chat_search_fts (chat_id, title, message_content, reasoning_content) VALUES (?, ?, '', '')",
-        )
-        .run(chatRow.id, chatRow.title);
-    }
-
-    const messageRows = this.database
+    this.database
       .query(
-        "SELECT chat_id, content, reasoning_content FROM messages ORDER BY chat_id ASC, sequence_number ASC",
+        "INSERT INTO chat_search_fts (chat_id, title, message_content, reasoning_content) SELECT id, title, '', '' FROM chats ORDER BY created_at ASC",
       )
-      .all() as Array<{ chat_id: string; content: string; reasoning_content: string | null }>;
+      .run();
 
-    for (const messageRow of messageRows) {
-      this.database
-        .query(
-          "INSERT INTO chat_search_fts (chat_id, title, message_content, reasoning_content) VALUES (?, '', ?, ?)",
-        )
-        .run(messageRow.chat_id, messageRow.content, messageRow.reasoning_content ?? "");
-    }
+    this.database
+      .query(
+        "INSERT INTO chat_search_fts (chat_id, title, message_content, reasoning_content) SELECT chat_id, '', content, COALESCE(reasoning_content, '') FROM messages ORDER BY chat_id ASC, sequence_number ASC",
+      )
+      .run();
   }
 
   /** Rebuilds the search index rows for one chat from canonical chat/message tables. */

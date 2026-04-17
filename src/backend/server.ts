@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, open, rm } from "node:fs/promises";
 import path from "node:path";
 import type {
   AppConfig,
@@ -92,6 +92,7 @@ let configStore!: ConfigStore;
 let database!: AppDatabase;
 let debugLogService!: DebugLogService;
 let embeddedStaticAssets: ReadonlyMap<string, ReturnType<typeof Bun.file>> = new Map();
+const staticAssetDiskExistsCache = new Map<string, boolean>();
 let scanner!: ModelScanner;
 let toolRegistry!: LocalToolRegistry;
 let llamaServerManager!: LlamaServerManager;
@@ -237,7 +238,10 @@ async function startServer(): Promise<void> {
 
     for (const fileEntry of fileEntries) {
       if (typeof fileEntry === "string") {
-        continue;
+        return createErrorResponse(
+          400,
+          'Uploaded form field "files" must contain file uploads, not plain text.',
+        );
       }
 
       uploadFiles.push(fileEntry as File);
@@ -315,8 +319,10 @@ async function startServer(): Promise<void> {
         };
 
         attachments.push(attachment);
-        const fileData = await upload.file.arrayBuffer();
-        await Bun.write(targetFilePath, new Uint8Array(fileData));
+        await writeFileStream(targetFilePath, upload.file.stream());
+      }
+
+      for (const attachment of attachments) {
         database.createPendingAttachment(chatIdValue, messageId, attachment);
       }
     } catch (error) {
@@ -467,6 +473,8 @@ async function startServer(): Promise<void> {
             return createErrorResponse(404, `Model not found: ${body.modelId}`);
           }
 
+          database.ensureDefaultPresets(selectedModel);
+
           const loadPreset = resolveLoadPreset(selectedModel, database, body.loadPresetId);
           const systemPromptPreset = resolveSystemPromptPreset(
             selectedModel,
@@ -509,13 +517,16 @@ async function startServer(): Promise<void> {
       },
       "/api/chats": {
         GET: (request) => {
-          const searchQuery = new URL(request.url).searchParams.get("search") ?? "";
+          const requestUrl = new URL(request.url);
+          const searchQuery = requestUrl.searchParams.get("search") ?? "";
+          const page = Number(requestUrl.searchParams.get("page") ?? "1");
+          const pageSize = Number(requestUrl.searchParams.get("pageSize") ?? "50");
 
           return Response.json({
             chats:
               searchQuery.trim().length > 0
-                ? database.searchChats(searchQuery)
-                : database.listChats(),
+                ? database.searchChats(searchQuery, page, pageSize)
+                : database.listChats(page, pageSize),
             dbRevision: database.getRevision(),
           });
         },
@@ -720,32 +731,41 @@ async function startServer(): Promise<void> {
             throw error;
           }
 
-          void cleanupFinalizedPendingAttachments({
-            chatId: request.params.chatId,
-            createCleanupJob: (chatId, operation, filePaths) =>
-              database.createAttachmentCleanupJob(chatId, operation, filePaths).id,
-            deletePendingAttachmentFiles: deleteAttachmentFiles,
-            log: (message) => {
-              debugLogService.serverLog(message);
-            },
-            markCleanupJobCompleted: (jobId) => {
-              database.markAttachmentCleanupJobCompleted(jobId);
-            },
-            markCleanupJobFailed: (jobId, errorMessage) => {
-              database.markAttachmentCleanupJobFailed(jobId, errorMessage);
-            },
-            markCleanupJobQueued: (jobId, errorMessage) => {
-              database.requeueAttachmentCleanupJob(jobId, errorMessage);
-            },
-            markCleanupJobRunning: (jobId) => {
-              database.markAttachmentCleanupJobRunning(jobId);
-            },
-            markPendingAttachmentsCleanupFailed: (attachmentIds, errorMessage) => {
-              database.markPendingAttachmentsCleanupFailed(attachmentIds, errorMessage);
-            },
-            messageId: createdMessage.id,
-            pendingAttachments: preparedAttachments.pendingAttachments,
-          });
+          let attachmentCleanupError: string | null = null;
+
+          try {
+            await cleanupFinalizedPendingAttachments({
+              chatId: request.params.chatId,
+              createCleanupJob: (chatId, operation, filePaths) =>
+                database.createAttachmentCleanupJob(chatId, operation, filePaths).id,
+              deletePendingAttachmentFiles: deleteAttachmentFiles,
+              log: (message) => {
+                debugLogService.serverLog(message);
+              },
+              markCleanupJobCompleted: (jobId) => {
+                database.markAttachmentCleanupJobCompleted(jobId);
+              },
+              markCleanupJobFailed: (jobId, errorMessage) => {
+                database.markAttachmentCleanupJobFailed(jobId, errorMessage);
+              },
+              markCleanupJobQueued: (jobId, errorMessage) => {
+                database.requeueAttachmentCleanupJob(jobId, errorMessage);
+              },
+              markCleanupJobRunning: (jobId) => {
+                database.markAttachmentCleanupJobRunning(jobId);
+              },
+              markPendingAttachmentsCleanupFailed: (attachmentIds, errorMessage) => {
+                database.markPendingAttachmentsCleanupFailed(attachmentIds, errorMessage);
+              },
+              messageId: createdMessage.id,
+              pendingAttachments: preparedAttachments.pendingAttachments,
+            });
+          } catch (error) {
+            attachmentCleanupError = error instanceof Error ? error.message : String(error);
+            debugLogService.serverLog(
+              `Finalized pending attachment cleanup failed for chat ${request.params.chatId} message ${createdMessage.id}: ${attachmentCleanupError}`,
+            );
+          }
 
           debugLogService.verboseServerLog(
             `Persisted ${messageRole} message ${createdMessage.id} for chat ${request.params.chatId}.`,
@@ -755,6 +775,7 @@ async function startServer(): Promise<void> {
             {
               dbRevision: database.getRevision(),
               message: createdMessage,
+              ...(attachmentCleanupError ? { attachmentCleanupError } : {}),
             },
             { status: 201 },
           );
@@ -1322,6 +1343,80 @@ async function startServer(): Promise<void> {
           return Response.json({ stopped });
         },
       },
+      "/api/media/upload": {
+        POST: async (request: RouteRequest<{}>, server) => {
+          server.timeout(request, 0);
+
+          return await handleMediaUpload(request);
+        },
+      },
+      "/api/media/pending": {
+        DELETE: async (request: RouteRequest<{}>) => {
+          const body = await readJsonObject(request);
+          const chatIdValue = body["chatId"];
+          const messageIdValue = body["messageId"];
+          const attachmentIdsValue = body["attachmentIds"];
+
+          if (typeof chatIdValue !== "string" || chatIdValue.trim().length === 0) {
+            return createErrorResponse(400, "Missing required field: chatId.");
+          }
+
+          if (typeof messageIdValue !== "string" || messageIdValue.trim().length === 0) {
+            return createErrorResponse(400, "Missing required field: messageId.");
+          }
+
+          const messageId = messageIdValue.trim();
+
+          if (!isUuid(messageId)) {
+            return createErrorResponse(400, "messageId must be a valid UUID.");
+          }
+
+          const chat = database.getChat(chatIdValue);
+
+          if (!chat) {
+            return createErrorResponse(404, `Chat not found: ${chatIdValue}`);
+          }
+
+          const attachmentIds = readAttachmentIds(attachmentIdsValue);
+          const pendingAttachments = database
+            .listPendingAttachmentsForMessage(chatIdValue, messageId)
+            .filter(
+              (attachment) => attachmentIds.length === 0 || attachmentIds.includes(attachment.id),
+            );
+
+          if (pendingAttachments.length === 0) {
+            return Response.json({
+              dbRevision: database.getRevision(),
+              deletedAttachmentIds: [],
+            });
+          }
+
+          try {
+            await deleteAttachmentFiles(pendingAttachments);
+            const deletedAttachmentIds = pendingAttachments.map((attachment) => attachment.id);
+            database.deletePendingAttachments(deletedAttachmentIds);
+
+            return Response.json({
+              dbRevision: database.getRevision(),
+              deletedAttachmentIds,
+            });
+          } catch (error) {
+            const pendingAttachmentIds = pendingAttachments.map((attachment) => attachment.id);
+
+            database.markPendingAttachmentsAbandoned(
+              pendingAttachmentIds,
+              error instanceof Error ? error.message : String(error),
+            );
+
+            return createErrorResponse(
+              500,
+              `Failed to delete pending attachment artifact(s): ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          }
+        },
+      },
       "/api/*": false,
     },
     fetch: async (request, activeServer) => {
@@ -1345,12 +1440,6 @@ async function startServer(): Promise<void> {
 
       if (requestUrl.pathname === "/api/events/runtime") {
         return runtimeBroadcaster.subscribe(request, activeServer);
-      }
-
-      if (request.method === "POST" && requestUrl.pathname === "/api/media/upload") {
-        activeServer.timeout(request, 0);
-
-        return await handleMediaUpload(request);
       }
 
       if (request.method === "POST" && requestUrl.pathname === "/api/generate/chat") {
@@ -1522,6 +1611,7 @@ const handleShutdownSignal = async (signalName: string): Promise<void> => {
   debugLogService.serverLog(`Received ${signalName}; shutting down.`);
 
   let forcedBackendExitHandle: ReturnType<typeof setTimeout> | null = null;
+  let shutdownExitCode = 0;
 
   const forcedExitHandle = setTimeout(() => {
     debugLogService.serverLog(
@@ -1548,18 +1638,20 @@ const handleShutdownSignal = async (signalName: string): Promise<void> => {
 
     await llamaServerManager.unload(signalName);
     await server.stop(true);
-    process.exit(0);
   } catch (error) {
+    shutdownExitCode = 1;
     const errorMessage = error instanceof Error ? error.message : String(error);
 
     debugLogService.serverLog(`Shutdown failed: ${errorMessage}`);
-    process.exit(1);
   } finally {
     clearTimeout(forcedExitHandle);
 
     if (forcedBackendExitHandle) {
       clearTimeout(forcedBackendExitHandle);
+      forcedBackendExitHandle = null;
     }
+
+    process.exit(shutdownExitCode === 0 ? 0 : 1);
   }
 };
 
@@ -1665,7 +1757,7 @@ function wrapForegroundGenerationResponse(response: Response, complete: () => vo
     return response;
   }
 
-  const upstreamReader = response.body.getReader();
+  let upstreamReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   let completed = false;
   const finalize = (): void => {
     if (!completed) {
@@ -1674,17 +1766,30 @@ function wrapForegroundGenerationResponse(response: Response, complete: () => vo
     }
   };
 
+  const createReader = (): ReadableStreamDefaultReader<Uint8Array> => {
+    try {
+      return response.body!.getReader();
+    } catch (error) {
+      finalize();
+      throw error;
+    }
+  };
+
   return new Response(
     new ReadableStream<Uint8Array>({
       async cancel(reason) {
         try {
-          await upstreamReader.cancel(reason);
+          if (upstreamReader) {
+            await upstreamReader.cancel(reason);
+          }
         } finally {
           finalize();
         }
       },
       async start(controller) {
         try {
+          upstreamReader = createReader();
+
           while (true) {
             const readResult = await upstreamReader.read();
 
@@ -1805,8 +1910,6 @@ function createJsonChatsExportStream(
 
       controller.enqueue(encoder.encode(`${first ? "" : ","}${JSON.stringify(sanitized)}`));
       first = false;
-
-      await Bun.sleep(0);
     },
     cancel() {
       streamClosed = true;
@@ -1882,8 +1985,6 @@ function createMarkdownChatsExportStream(
 
       controller.enqueue(encoder.encode(emittedChat ? `\n\n---\n\n${renderedChat}` : renderedChat));
       emittedChat = true;
-
-      await Bun.sleep(0);
     },
     cancel() {
       streamClosed = true;
@@ -1940,27 +2041,59 @@ function renderSingleChatMarkdown(
   return `# ${chat.title}\n\nChat ID: ${chat.id}\n\nCreated: ${chat.createdAt}\nUpdated: ${chat.updatedAt}\n${chat.lastUsedModelId ? `Last model: ${chat.lastUsedModelId}\n` : ""}\n${transcript}`;
 }
 
-const MAX_JSON_BODY_BYTES = 10 * 1024 * 1024;
+const MAX_JSON_BODY_BYTES = (() => {
+  const envValue = Number(process.env["LOCAL_LLM_GUI_MAX_JSON_BODY_BYTES"] ?? "");
+
+  return Number.isFinite(envValue) && envValue > 0
+    ? envValue
+    : 10 * 1024 * 1024;
+})();
+const MAX_MULTIPART_BODY_BYTES = 50 * 1024 * 1024;
+
+function getTrustedWriteOrigins(): Set<string> {
+  const rawOrigins = process.env["LOCAL_LLM_GUI_TRUSTED_ORIGINS"]?.split(",") ?? [];
+  const trustedOrigins = new Set<string>();
+
+  for (const rawOrigin of rawOrigins) {
+    const trimmedOrigin = rawOrigin.trim();
+
+    if (!trimmedOrigin) {
+      continue;
+    }
+
+    try {
+      trustedOrigins.add(new URL(trimmedOrigin).origin);
+    } catch {
+      // Ignore invalid trusted origin configuration entries.
+    }
+  }
+
+  return trustedOrigins;
+}
 
 /**
  * Parses the request body as a JSON object, rejecting malformed JSON
  * or non-object payloads with a 400 response.
  *
  * @param request - Incoming HTTP request.
+ * @param maxBytes - Maximum request body size in bytes for this route.
  * @returns Parsed JSON object.
  */
-async function readJsonObject(request: Request): Promise<Record<string, unknown>> {
-  assertTrustedWriteRequest(request);
+async function readJsonObject(
+  request: Request,
+  maxBytes = MAX_JSON_BODY_BYTES,
+): Promise<Record<string, unknown>> {
   assertJsonContentType(request);
+  assertTrustedWriteRequest(request);
 
   const contentLength = request.headers.get("Content-Length");
 
-  if (contentLength !== null && Number(contentLength) > MAX_JSON_BODY_BYTES) {
-    throw new HttpError(413, `Request body exceeds limit of ${MAX_JSON_BODY_BYTES} bytes.`);
+  if (contentLength !== null && Number(contentLength) > maxBytes) {
+    throw new HttpError(413, `Request body exceeds limit of ${maxBytes} bytes.`);
   }
 
   try {
-    const requestBodyText = await readRequestTextWithLimit(request, MAX_JSON_BODY_BYTES);
+    const requestBodyText = await readRequestTextWithLimit(request, maxBytes);
 
     if (requestBodyText.trim().length === 0) {
       throw new HttpError(400, "Request body is required.");
@@ -2002,7 +2135,7 @@ async function readRequestTextWithLimit(request: Request, maxBytes: number): Pro
     byteCount += value.byteLength;
 
     if (byteCount > maxBytes) {
-      throw new HttpError(413, `Request body exceeds limit of ${MAX_JSON_BODY_BYTES} bytes.`);
+      throw new HttpError(413, `Request body exceeds limit of ${maxBytes} bytes.`);
     }
 
     bodyText += decoder.decode(value, { stream: true });
@@ -2021,6 +2154,17 @@ async function readRequestTextWithLimit(request: Request, maxBytes: number): Pro
  * @throws {HttpError} When a browser-originated write targets the backend from an untrusted origin.
  */
 function assertTrustedWriteRequest(request: Request): void {
+  const trustedWriteSecret = process.env["LOCAL_LLM_GUI_WRITE_SECRET"]?.trim();
+  const secretHeader = request.headers.get("x-local-llm-gui-secret");
+
+  if (trustedWriteSecret) {
+    if (secretHeader !== trustedWriteSecret) {
+      throw new HttpError(403, "Write requests require a valid trusted secret.");
+    }
+
+    return;
+  }
+
   const fetchSiteHeader = request.headers.get("Sec-Fetch-Site")?.trim().toLowerCase();
 
   if (fetchSiteHeader === "cross-site") {
@@ -2028,15 +2172,18 @@ function assertTrustedWriteRequest(request: Request): void {
   }
 
   const originHeader = request.headers.get("Origin");
-
-  if (!originHeader) {
-    return;
-  }
-
   const allowedOrigins = new Set<string>([new URL(request.url).origin]);
 
   if (developmentProxyMode) {
     allowedOrigins.add(process.env["LOCAL_LLM_GUI_FRONTEND_ORIGIN"] ?? "http://127.0.0.1:3000");
+  }
+
+  for (const trustedOrigin of getTrustedWriteOrigins()) {
+    allowedOrigins.add(trustedOrigin);
+  }
+
+  if (!originHeader) {
+    throw new HttpError(403, "Write requests require a trusted origin or secret.");
   }
 
   if (!allowedOrigins.has(originHeader)) {
@@ -2080,10 +2227,46 @@ type RequestFormData = Awaited<ReturnType<Request["formData"]>>;
 async function readMultipartFormData(request: Request): Promise<RequestFormData> {
   assertMultipartFormRequest(request);
 
+  const contentLengthHeader = request.headers.get("Content-Length");
+
+  if (contentLengthHeader !== null) {
+    const contentLength = Number(contentLengthHeader);
+
+    if (!Number.isFinite(contentLength) || contentLength < 0) {
+      throw new HttpError(400, "Invalid Content-Length header for multipart upload.");
+    }
+
+    if (contentLength > MAX_MULTIPART_BODY_BYTES) {
+      throw new HttpError(413, `Request body exceeds limit of ${MAX_MULTIPART_BODY_BYTES} bytes.`);
+    }
+  }
+
   try {
     return await request.formData();
   } catch {
     throw new HttpError(400, "The upload body is not valid multipart/form-data.");
+  }
+}
+
+async function writeFileStream(targetFilePath: string, stream: ReadableStream<Uint8Array>): Promise<void> {
+  const fileHandle = await open(targetFilePath, "w");
+
+  try {
+    const reader = stream.getReader();
+
+    while (true) {
+      const { done, value } = await reader.read();
+
+      if (done) {
+        break;
+      }
+
+      if (value) {
+        await fileHandle.write(new Uint8Array(value));
+      }
+    }
+  } finally {
+    await fileHandle.close();
   }
 }
 
@@ -2192,8 +2375,14 @@ function createStaticAssetResponse(
   requestPathname: string,
   diskCandidatePath?: string,
 ): Response | null {
-  if (diskCandidatePath && existsSync(diskCandidatePath)) {
-    return new Response(Bun.file(diskCandidatePath));
+  if (diskCandidatePath) {
+    const diskExists =
+      staticAssetDiskExistsCache.get(diskCandidatePath) ?? existsSync(diskCandidatePath);
+    staticAssetDiskExistsCache.set(diskCandidatePath, diskExists);
+
+    if (diskExists) {
+      return new Response(Bun.file(diskCandidatePath));
+    }
   }
 
   const normalizedPathname = normalizeStaticAssetRequestPath(requestPathname);
@@ -2357,6 +2546,8 @@ function createMediaAttachmentResponse(
     headers: {
       "Content-Length": String(attachment.byteSize),
       "Content-Type": attachment.mimeType,
+      "Cache-Control": "public, max-age=604800, immutable",
+      "Accept-Ranges": "bytes",
     },
   });
 }
@@ -2425,6 +2616,36 @@ function readRequestedAttachmentIds(mediaAttachmentsValue: unknown): string[] {
 
     if (seenAttachmentIds.has(attachmentId)) {
       throw new HttpError(400, "Duplicate media attachment IDs are not allowed.");
+    }
+
+    seenAttachmentIds.add(attachmentId);
+    attachmentIds.push(attachmentId);
+  }
+
+  return attachmentIds;
+}
+
+function readAttachmentIds(attachmentIdsValue: unknown): string[] {
+  if (attachmentIdsValue === undefined) {
+    return [];
+  }
+
+  if (!Array.isArray(attachmentIdsValue)) {
+    throw new HttpError(400, "attachmentIds must be an array of attachment IDs.");
+  }
+
+  const attachmentIds: string[] = [];
+  const seenAttachmentIds = new Set<string>();
+
+  for (const rawAttachmentId of attachmentIdsValue) {
+    if (typeof rawAttachmentId !== "string" || rawAttachmentId.trim().length === 0) {
+      throw new HttpError(400, "attachmentIds must contain non-empty string IDs.");
+    }
+
+    const attachmentId = rawAttachmentId.trim();
+
+    if (seenAttachmentIds.has(attachmentId)) {
+      throw new HttpError(400, "Duplicate attachment IDs are not allowed.");
     }
 
     seenAttachmentIds.add(attachmentId);

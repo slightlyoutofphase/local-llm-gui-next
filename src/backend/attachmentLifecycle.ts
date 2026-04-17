@@ -1,4 +1,4 @@
-import { access, copyFile, mkdir, rename, rm } from "node:fs/promises";
+import { access, copyFile, mkdir, readFile, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import type { ChatMessageRecord, MediaAttachmentRecord } from "../lib/contracts";
 import { deleteAttachmentArtifacts } from "./attachmentReplay";
@@ -164,11 +164,18 @@ export async function rollbackPromotedPendingAttachments(
       continue;
     }
 
-    if (
-      finalAttachment.filePath === pendingAttachment.filePath ||
-      (await pathExists(pendingAttachment.filePath))
-    ) {
-      await deleteAttachmentArtifacts(finalAttachment);
+    if (finalAttachment.filePath === pendingAttachment.filePath) {
+      continue;
+    }
+
+    if (await pathExists(pendingAttachment.filePath)) {
+      if (
+        finalAttachment.filePath !== pendingAttachment.filePath &&
+        (await filesHaveIdenticalContents(finalAttachment.filePath, pendingAttachment.filePath))
+      ) {
+        await deleteAttachmentArtifacts(finalAttachment);
+      }
+
       continue;
     }
 
@@ -177,6 +184,22 @@ export async function rollbackPromotedPendingAttachments(
       finalAttachment.filePath,
       pendingAttachment.filePath,
     );
+  }
+}
+
+async function filesHaveIdenticalContents(
+  firstPath: string,
+  secondPath: string,
+): Promise<boolean> {
+  try {
+    const [firstData, secondData] = await Promise.all([
+      readFile(firstPath),
+      readFile(secondPath),
+    ]);
+
+    return firstData.length === secondData.length && firstData.equals(secondData);
+  } catch {
+    return false;
   }
 }
 

@@ -119,7 +119,7 @@ function CodeBlock({ code, language }: { code: string; language: string }): Reac
         </Button>
       </div>
       <pre className="overflow-x-auto p-4 text-sm leading-7">
-        <code dangerouslySetInnerHTML={{ __html: highlightedCode }} />
+        <code dangerouslySetInnerHTML={{ __html: sanitizeHighlightedCode(highlightedCode) }} />
       </pre>
     </div>
   );
@@ -135,6 +135,46 @@ export function renderHighlightedCodeBlock(code: string, language: string): stri
   }
 
   return escapeHtml(code);
+}
+
+function sanitizeHighlightedCode(highlightedCode: string): string {
+  const parser = new DOMParser();
+  const document = parser.parseFromString(highlightedCode, "text/html");
+  const sanitizedFragment = document.createDocumentFragment();
+
+  const appendSafeNode = (node: ChildNode, parent: Node): void => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      parent.appendChild(document.createTextNode(node.textContent ?? ""));
+      return;
+    }
+
+    if (node.nodeType !== Node.ELEMENT_NODE) {
+      return;
+    }
+
+    const element = node as HTMLElement;
+    const tagName = element.tagName.toLowerCase();
+    const allowedTags = new Set(["span", "br", "code", "div", "pre"]);
+
+    if (!allowedTags.has(tagName)) {
+      element.childNodes.forEach((child) => appendSafeNode(child, parent));
+      return;
+    }
+
+    const safeElement = document.createElement(tagName);
+
+    if (element.className) {
+      safeElement.setAttribute("class", element.className);
+    }
+
+    element.childNodes.forEach((child) => appendSafeNode(child, safeElement));
+    parent.appendChild(safeElement);
+  };
+
+  document.body.childNodes.forEach((node) => appendSafeNode(node, sanitizedFragment));
+  const container = document.createElement("div");
+  container.appendChild(sanitizedFragment);
+  return container.innerHTML;
 }
 
 export function shouldAutoDetectCodeLanguage(code: string): boolean {
@@ -159,6 +199,119 @@ export function shouldAutoDetectCodeLanguage(code: string): boolean {
 
 function escapeHtml(value: string): string {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
+function sanitizeMermaidSvg(svg: string): string {
+  const parser = new DOMParser();
+  const document = parser.parseFromString(svg, "image/svg+xml");
+  const fragment = document.createDocumentFragment();
+
+  const allowedTags = new Set([
+    "svg",
+    "g",
+    "path",
+    "rect",
+    "circle",
+    "ellipse",
+    "line",
+    "polyline",
+    "polygon",
+    "text",
+    "tspan",
+    "defs",
+    "linearGradient",
+    "radialGradient",
+    "stop",
+    "mask",
+    "filter",
+    "use",
+    "clipPath",
+    "metadata",
+    "title",
+    "desc",
+  ]);
+
+  const allowedAttributes = new Set([
+    "class",
+    "cx",
+    "cy",
+    "d",
+    "dx",
+    "dy",
+    "fill",
+    "fill-opacity",
+    "font-family",
+    "font-size",
+    "height",
+    "id",
+    "mask",
+    "offset",
+    "opacity",
+    "pathLength",
+    "points",
+    "rx",
+    "ry",
+    "stroke",
+    "stroke-linecap",
+    "stroke-linejoin",
+    "stroke-width",
+    "style",
+    "transform",
+    "viewBox",
+    "width",
+    "x",
+    "x1",
+    "x2",
+    "xlink:href",
+    "y",
+    "y1",
+    "y2",
+  ]);
+
+  const sanitizeNode = (node: ChildNode, parent: Node): void => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      parent.appendChild(document.createTextNode(node.textContent ?? ""));
+      return;
+    }
+
+    if (node.nodeType !== Node.ELEMENT_NODE) {
+      return;
+    }
+
+    const element = node as Element;
+    const tagName = element.tagName;
+
+    if (!allowedTags.has(tagName)) {
+      element.childNodes.forEach((child) => sanitizeNode(child, parent));
+      return;
+    }
+
+    const safeElement = document.createElementNS("http://www.w3.org/2000/svg", tagName);
+
+    for (const attr of Array.from(element.attributes)) {
+      const name = attr.name.toLowerCase();
+      const value = attr.value;
+
+      if (!allowedAttributes.has(name)) {
+        continue;
+      }
+
+      if (name.startsWith("on")) {
+        continue;
+      }
+
+      safeElement.setAttribute(attr.name, value);
+    }
+
+    element.childNodes.forEach((child) => sanitizeNode(child, safeElement));
+    parent.appendChild(safeElement);
+  };
+
+  document.documentElement.childNodes.forEach((child) => sanitizeNode(child, fragment));
+
+  const container = document.createElement("div");
+  container.appendChild(fragment);
+  return container.innerHTML;
 }
 
 /** Renders a Mermaid diagram from a fenced code block, falling back to raw source on error. */
@@ -243,7 +396,7 @@ function MermaidBlock({ code }: { code: string }): ReactElement {
       {renderedSvg ? (
         <div
           className="mermaid-diagram-viewer overflow-x-auto p-4 [&_svg]:mx-auto [&_svg]:h-auto [&_svg]:max-w-full"
-          dangerouslySetInnerHTML={{ __html: renderedSvg }}
+          dangerouslySetInnerHTML={{ __html: sanitizeMermaidSvg(renderedSvg) }}
         />
       ) : error ? (
         <div className="space-y-3 p-4">

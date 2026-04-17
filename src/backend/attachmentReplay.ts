@@ -1,3 +1,4 @@
+import { createReadStream } from "node:fs";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import type { MediaAttachmentRecord } from "../lib/contracts";
 
@@ -55,6 +56,49 @@ export function buildBinaryAttachmentReplayDescriptor(
     version: ATTACHMENT_REPLAY_DESCRIPTOR_VERSION,
   };
   const base64Data = fileBuffer.toString("base64");
+
+  if (attachment.kind === "image") {
+    return {
+      ...baseDescriptor,
+      dataUrl: `data:${attachment.mimeType};base64,${base64Data}`,
+      kind: "image",
+    };
+  }
+
+  return {
+    ...baseDescriptor,
+    base64Data,
+    format: deriveReplayAudioFormat(attachment.mimeType),
+    kind: "audio",
+  };
+}
+
+export async function buildBinaryAttachmentReplayDescriptorFromFile(
+  attachment: MediaAttachmentRecord,
+  filePath: string,
+): Promise<PersistedBinaryAttachmentReplayDescriptor> {
+  if (!isBinaryReplayableAttachment(attachment)) {
+    throw new Error(`Attachment ${attachment.id} is not replayable binary media.`);
+  }
+
+  const stream = createReadStream(filePath, { highWaterMark: 64 * 1024 });
+  const encodedChunks: string[] = [];
+  let byteSize = 0;
+
+  for await (const chunk of stream) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    byteSize += buffer.byteLength;
+    encodedChunks.push(buffer.toString("base64"));
+  }
+
+  const base64Data = encodedChunks.join("");
+  const baseDescriptor: BinaryAttachmentReplayDescriptorBase = {
+    attachmentId: attachment.id,
+    byteSize,
+    kind: attachment.kind,
+    mimeType: attachment.mimeType,
+    version: ATTACHMENT_REPLAY_DESCRIPTOR_VERSION,
+  };
 
   if (attachment.kind === "image") {
     return {

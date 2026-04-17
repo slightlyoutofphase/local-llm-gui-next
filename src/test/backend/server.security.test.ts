@@ -77,6 +77,31 @@ describe("backend server write-route hardening", () => {
   );
 
   test(
+    "rejects write routes without an Origin header when no secret is configured",
+    async () => {
+      userDataDir = await createBackendTestScratchDir("local-llm-gui-security");
+
+      const port = await allocatePort();
+      const backendServer = await startBackendServer(port, userDataDir);
+
+      serverProcess = backendServer.process;
+
+      const response = await fetch(`${backendServer.baseUrl}/api/chats`, {
+        body: JSON.stringify({ title: "Blocked chat" }),
+        headers: {
+          "Content-Type": "application/json",
+        },
+        method: "POST",
+      });
+      const payload = (await response.json()) as { error?: string };
+
+      expect(response.status).toBe(403);
+      expect(payload.error).toContain("trusted origin");
+    },
+    { timeout: 30_000 },
+  );
+
+  test(
     "rejects non-JSON content types on JSON write routes",
     async () => {
       userDataDir = await createBackendTestScratchDir("local-llm-gui-security");
@@ -152,6 +177,38 @@ describe("backend server write-route hardening", () => {
 
       expect(response.status).toBe(201);
       expect(payload.chat?.title).toBe("Allowed chat");
+      expect(typeof payload.dbRevision).toBe("number");
+    },
+    { timeout: 30_000 },
+  );
+
+  test(
+    "allows trusted origins configured through LOCAL_LLM_GUI_TRUSTED_ORIGINS",
+    async () => {
+      userDataDir = await createBackendTestScratchDir("local-llm-gui-security");
+
+      const port = await allocatePort();
+      const backendServer = await startBackendServer(port, userDataDir, {
+        LOCAL_LLM_GUI_TRUSTED_ORIGINS: "http://trusted.example",
+      });
+
+      serverProcess = backendServer.process;
+
+      const response = await fetch(`${backendServer.baseUrl}/api/chats`, {
+        body: JSON.stringify({ title: "Trusted origin chat" }),
+        headers: {
+          "Content-Type": "application/json",
+          Origin: "http://trusted.example",
+        },
+        method: "POST",
+      });
+      const payload = (await response.json()) as {
+        chat?: { title?: string };
+        dbRevision?: number;
+      };
+
+      expect(response.status).toBe(201);
+      expect(payload.chat?.title).toBe("Trusted origin chat");
       expect(typeof payload.dbRevision).toBe("number");
     },
     { timeout: 30_000 },
@@ -245,6 +302,7 @@ describe("backend server write-route hardening", () => {
 async function startBackendServer(
   port: number,
   userDataDir: string,
+  envOverrides: Record<string, string> = {},
 ): Promise<{ baseUrl: string; process: ChildProcess }> {
   const baseUrl = `http://127.0.0.1:${port}`;
   const output = {
@@ -261,6 +319,7 @@ async function startBackendServer(
         LOCAL_LLM_GUI_DISABLE_BROWSER: "1",
         LOCAL_LLM_GUI_FRONTEND_ORIGIN: "http://127.0.0.1:3000",
         LOCAL_LLM_GUI_USER_DATA_DIR: userDataDir,
+        ...envOverrides,
       },
       stdio: ["ignore", "pipe", "pipe"],
     },

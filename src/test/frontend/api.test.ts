@@ -1,9 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
 import {
+  buildTimedRequestSignal,
   getChat,
   getChats,
   getChatsWithOptions,
   getMediaAttachmentUrl,
+  isRetryableRequestError,
   loadModel,
   subscribeToJsonSse,
 } from "../../lib/api";
@@ -191,4 +193,132 @@ test("loadModel forwards an explicit runtime-load timeout override", async () =>
   await loadModel("model-1", undefined, undefined, 210_000);
 
   expect(capturedTimeouts).toEqual([210_000]);
+});
+
+test("isRetryableRequestError returns true for common retryable network conditions", () => {
+  expect(isRetryableRequestError(new Error("Failed to fetch"))).toBe(true);
+  expect(isRetryableRequestError(new Error("Connection reset by peer"))).toBe(true);
+
+  const codeError = new Error("socket hang up");
+  (codeError as any).code = "ECONNRESET";
+
+  expect(isRetryableRequestError(codeError)).toBe(true);
+});
+
+test("isRetryableRequestError returns false for AbortError instances", () => {
+  const abortError = new Error("The operation was aborted");
+  abortError.name = "AbortError";
+
+  expect(isRetryableRequestError(abortError)).toBe(false);
+});
+
+test("buildTimedRequestSignal fallback combines timeout and existing signal when AbortSignal.any is unavailable", async () => {
+  const descriptor = Object.getOwnPropertyDescriptor(AbortSignal, "any");
+
+  if (descriptor && descriptor.configurable !== true) {
+    expect(true).toBe(true);
+    return;
+  }
+
+  const originalAny = (AbortSignal as any).any;
+
+  Object.defineProperty(AbortSignal, "any", {
+    value: undefined,
+    configurable: true,
+    writable: true,
+  });
+
+  try {
+    const { signal: combinedSignal, cleanup } = buildTimedRequestSignal(null, 1);
+
+    expect(combinedSignal.aborted).toBe(false);
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    expect(combinedSignal.aborted).toBe(true);
+    cleanup();
+  } finally {
+    if (descriptor) {
+      Object.defineProperty(AbortSignal, "any", descriptor);
+    } else {
+      delete (AbortSignal as any).any;
+    }
+    (AbortSignal as any).any = originalAny;
+  }
+});
+
+test("buildTimedRequestSignal cleanup cancels the fallback timeout when an existing signal is provided", async () => {
+  const descriptor = Object.getOwnPropertyDescriptor(AbortSignal, "any");
+
+  if (descriptor && descriptor.configurable !== true) {
+    expect(true).toBe(true);
+    return;
+  }
+
+  const originalAny = (AbortSignal as any).any;
+
+  Object.defineProperty(AbortSignal, "any", {
+    value: undefined,
+    configurable: true,
+    writable: true,
+  });
+
+  const existingController = new AbortController();
+  let cleanup: (() => void) | null = null;
+
+  try {
+    const result = buildTimedRequestSignal(existingController.signal, 10);
+    cleanup = result.cleanup;
+    const signal = result.signal;
+
+    expect(signal.aborted).toBe(false);
+    expect(existingController.signal.aborted).toBe(false);
+
+    cleanup();
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    expect(signal.aborted).toBe(false);
+    expect(existingController.signal.aborted).toBe(false);
+  } finally {
+    cleanup?.();
+
+    if (descriptor) {
+      Object.defineProperty(AbortSignal, "any", descriptor);
+    } else {
+      delete (AbortSignal as any).any;
+    }
+    (AbortSignal as any).any = originalAny;
+  }
+});
+
+test("buildTimedRequestSignal cleanup cancels the fallback timeout when AbortSignal.timeout is unavailable", async () => {
+  const timeoutDescriptor = Object.getOwnPropertyDescriptor(AbortSignal, "timeout");
+
+  if (!timeoutDescriptor?.configurable) {
+    expect(true).toBe(true);
+    return;
+  }
+
+  const originalTimeout = AbortSignal.timeout;
+
+  Object.defineProperty(AbortSignal, "timeout", {
+    value: undefined,
+    configurable: true,
+    writable: true,
+  });
+
+  try {
+    const { signal, cleanup } = buildTimedRequestSignal(null, 30);
+
+    expect(signal.aborted).toBe(false);
+    cleanup();
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(signal.aborted).toBe(false);
+  } finally {
+    if (timeoutDescriptor) {
+      Object.defineProperty(AbortSignal, "timeout", timeoutDescriptor);
+    }
+    (AbortSignal as any).timeout = originalTimeout;
+  }
 });

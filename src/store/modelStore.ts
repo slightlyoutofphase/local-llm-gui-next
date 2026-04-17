@@ -617,24 +617,25 @@ export const useModelStore = create<ModelStoreState>((set, get) => ({
 
     try {
       await configSaveQueue.enqueue(async () => {
-        const configResponse = await updateConfig(update);
+        try {
+          const configResponse = await updateConfig(update);
 
-        set({
-          config: configResponse.config,
-          error: configResponse.warning ?? null,
-          savingConfig: true,
-        });
+          set({
+            config: configResponse.config,
+            error: configResponse.warning ?? null,
+          });
 
-        if (typeof update.modelsPath === "string") {
-          await get().refreshModels();
-        }
+          if (typeof update.modelsPath === "string") {
+            await get().refreshModels();
+          }
 
-        if (update.toolEnabledStates) {
-          await get().refreshTools();
+          if (update.toolEnabledStates) {
+            await get().refreshTools();
+          }
+        } finally {
+          set({ savingConfig: configSaveQueue.hasPendingTasks() });
         }
       });
-
-      set({ savingConfig: configSaveQueue.hasPendingTasks() });
     } catch (error) {
       set({
         error: error instanceof Error ? error.message : "Failed to save configuration.",

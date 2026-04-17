@@ -32,10 +32,23 @@ describe("consumeJsonSseEvents", () => {
     expect(parsedEvents.remainder).toBe("");
   });
 
-  test("throws for malformed complete JSON payloads instead of ignoring them", () => {
-    expect(() => consumeJsonSseEvents(['data: {"choices":', "", ""].join("\n"))).toThrow(
-      "The backend returned an invalid SSE JSON payload.",
+  test("ignores malformed complete JSON payloads and continues parsing the stream", () => {
+    const parsedEvents = consumeJsonSseEvents(
+      [
+        'data: {"choices":[{"delta":{"content":"Hel"}}]}',
+        "",
+        'data: {"choices":[{"delta":{"content":"bad"}}',
+        "",
+        'data: {"choices":[{"delta":{"content":"o"}}]}',
+        "",
+        "",
+      ].join("\n"),
     );
+
+    expect(parsedEvents.payloads).toHaveLength(2);
+    expect(parsedEvents.payloads[0]).toEqual({ choices: [{ delta: { content: "Hel" } }] });
+    expect(parsedEvents.payloads[1]).toEqual({ choices: [{ delta: { content: "o" } }] });
+    expect(parsedEvents.remainder).toBe("");
   });
 
   test("throws when the trailing remainder grows beyond the safety cap", () => {
@@ -52,15 +65,13 @@ describe("flushJsonSseBuffer", () => {
     expect(payloads).toHaveLength(1);
   });
 
-  test("throws when the stream ends with a truncated JSON payload", () => {
-    expect(() => flushJsonSseBuffer('data: {"choices":[{"delta":')).toThrow(
-      "The backend returned an invalid SSE JSON payload.",
-    );
+  test("ignores malformed truncated payloads when the stream ends", () => {
+    expect(flushJsonSseBuffer('data: {"choices":[{"delta":')).toEqual([]);
   });
 });
 
 describe("subscribeToJsonSse", () => {
-  test("reports malformed event payloads as fatal errors when reconnects are disabled", () => {
+  test("reports malformed event payloads as transient errors when reconnects are disabled", () => {
     class FakeEventSource {
       private readonly listeners = new Map<string, Set<EventListener>>();
 
@@ -82,6 +93,7 @@ describe("subscribeToJsonSse", () => {
 
     const fakeEventSource = new FakeEventSource();
     const errorKinds: string[] = [];
+    const payloads: Array<{ ok: boolean }> = [];
 
     globalThis.EventSource = class {
       public constructor() {
@@ -94,18 +106,22 @@ describe("subscribeToJsonSse", () => {
       onError: (error) => {
         errorKinds.push(error.kind);
       },
-      onPayload: () => {},
+      onPayload: (payload) => {
+        payloads.push(payload);
+      },
       path: "/api/events/runtime",
       reconnect: false,
     });
 
     fakeEventSource.emit("runtime", new MessageEvent("runtime", { data: "{not-json" }));
+    fakeEventSource.emit("runtime", new MessageEvent("runtime", { data: JSON.stringify({ payload: { ok: true }, timestamp: "1", type: "runtime" }) }));
     disconnect();
 
-    expect(errorKinds).toEqual(["fatal"]);
+    expect(errorKinds).toEqual(["transient"]);
+    expect(payloads).toEqual([{ ok: true }]);
   });
 
-  test("reconnects after malformed event payloads when retries are enabled", async () => {
+  test("treats malformed event payloads as transient even when reconnect is enabled", async () => {
     class FakeEventSource {
       private readonly listeners = new Map<string, Set<EventListener>>();
 
@@ -118,9 +134,9 @@ describe("subscribeToJsonSse", () => {
 
       public close(): void {}
 
-      public emit(type: string, event?: Event): void {
+      public emit(type: string, event: Event): void {
         for (const listener of this.listeners.get(type) ?? []) {
-          listener(event ?? new Event(type));
+          listener(event);
         }
       }
     }
@@ -155,19 +171,14 @@ describe("subscribeToJsonSse", () => {
     });
 
     createdSources[0]?.emit("runtime", new MessageEvent("runtime", { data: "{not-json" }));
+    createdSources[0]?.emit("runtime", new MessageEvent("runtime", { data: JSON.stringify({ payload: { ok: true }, timestamp: "1", type: "runtime" }) }));
     await new Promise<void>((resolve) => {
       setTimeout(resolve, 10);
     });
-    createdSources[1]?.emit(
-      "runtime",
-      new MessageEvent("runtime", {
-        data: '{"payload":{"ok":true},"timestamp":"2026-04-15T00:00:00.000Z","type":"runtime"}',
-      }),
-    );
     disconnect();
 
     expect(errorKinds).toEqual(["transient"]);
-    expect(createdSources.length).toBe(2);
+    expect(createdSources.length).toBe(1);
     expect(payloads).toEqual([{ ok: true }]);
   });
 

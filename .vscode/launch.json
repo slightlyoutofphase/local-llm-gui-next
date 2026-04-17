@@ -5,6 +5,13 @@
     "version": "0.2.0",
     "configurations": [
         {
+  "name": "Launch Chrome",
+  "type": "chrome",
+  "request": "launch",
+  "url": "http://127.0.0.1:3000",
+  "webRoot": "${workspaceFolder}"
+},
+        {
             "type": "bun",
             "internalConsoleOptions": "neverOpen",
             "request": "launch",
@@ -29,7 +36,7 @@
             "internalConsoleOptions": "neverOpen",
             "request": "attach",
             "name": "Attach Bun",
-            "url": "ws://localhost:6499/",
+            "url": "https://debug.bun.sh/#localhost:3030/ssdb1a14u3a",
             "stopOnEntry": false
         }
     ]

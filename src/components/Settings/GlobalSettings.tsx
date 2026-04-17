@@ -143,13 +143,13 @@ export function GlobalSettings({
               <Input
                 id="llama-server-path"
                 onChange={(event) => {
-                    updateDraft((currentDraft) => ({
-                      ...currentDraft,
-                      llamaServerPath: event.target.value,
-                    }));
+                  updateDraft((currentDraft) => ({
+                    ...currentDraft,
+                    llamaServerPath: event.target.value,
+                  }));
                 }}
                 placeholder="C:\\path\\to\\llama-server.exe"
-                  value={currentDraft.llamaServerPath}
+                value={currentDraft.llamaServerPath}
               />
             </div>
             <div className="space-y-2">
@@ -157,13 +157,13 @@ export function GlobalSettings({
               <Input
                 id="models-path"
                 onChange={(event) => {
-                    updateDraft((currentDraft) => ({
-                      ...currentDraft,
-                      modelsPath: event.target.value,
-                    }));
+                  updateDraft((currentDraft) => ({
+                    ...currentDraft,
+                    modelsPath: event.target.value,
+                  }));
                 }}
                 placeholder="C:\\models"
-                  value={currentDraft.modelsPath}
+                value={currentDraft.modelsPath}
               />
             </div>
           </div>

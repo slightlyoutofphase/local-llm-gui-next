@@ -6,7 +6,7 @@
     "clean": "bun run scripts/clean.mjs",
     "dev": "bun run scripts/dev.mjs",
     "dev:frontend": "next dev --turbopack",
-    "dev:backend": "bun --watch src/backend/server.ts --port=4000",
+    "dev:backend": "bun --watch --debug src/backend/server.ts --port=4000",
     "build:frontend": "next build",
     "build:backend": "bun run scripts/generateEmbeddedStatic.ts && bun build --compile --minify --production --target=bun src/backend/server.ts --outfile dist/local-llm-gui",
     "build": "bun run build:frontend && bun run build:backend",

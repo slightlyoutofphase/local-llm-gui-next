@@ -1,4 +1,5 @@
 import { readdir, stat } from "node:fs/promises";
+import { watch, type FSWatcher } from "node:fs";
 import { availableParallelism } from "node:os";
 import path from "node:path";
 import type { ModelRecord } from "../lib/contracts";
@@ -41,6 +42,7 @@ interface ModelScannerDependencies {
  */
 export class ModelScanner {
   private scanCache: ScanCacheEntry | null = null;
+  private scanWatcher: FSWatcher | null = null;
   private scanWarning: string | null = null;
   private readonly maxConcurrentMetadataReads: number;
   private readonly readMetadata: typeof readModelMetadata;
@@ -52,7 +54,7 @@ export class ModelScanner {
    * @param debugLogService Optional debug log service for reporting scan errors.
    */
   public constructor(
-    private readonly database: AppDatabase,
+    _database: AppDatabase,
     private readonly debugLogService?: DebugLogService,
     dependencies: ModelScannerDependencies = {},
   ) {
@@ -115,10 +117,6 @@ export class ModelScanner {
         async (candidate) => await this.buildModelRecord(candidate),
       );
 
-      for (const modelRecord of discoveredModels) {
-        this.database.ensureDefaultPresets(modelRecord);
-      }
-
       const sortedModels = discoveredModels.sort((leftModel, rightModel) =>
         leftModel.id.localeCompare(rightModel.id, undefined, { sensitivity: "base" }),
       );
@@ -129,6 +127,7 @@ export class ModelScanner {
         modelsRoot,
       };
       this.scanWarning = null;
+      this.installModelsRootWatcher(modelsRoot);
 
       return sortedModels;
     } catch (error: unknown) {
@@ -140,6 +139,29 @@ export class ModelScanner {
       this.debugLogService?.serverLog(`Model scan failed for ${modelsRoot}: ${errorMessage}`);
 
       return [];
+    }
+  }
+
+  private installModelsRootWatcher(modelsRoot: string): void {
+    if (this.scanWatcher) {
+      this.scanWatcher.close();
+      this.scanWatcher = null;
+    }
+
+    try {
+      this.scanWatcher = watch(modelsRoot, { recursive: true }, () => {
+        this.scanCache = null;
+        this.scanWarning = null;
+      });
+
+      this.scanWatcher.on("error", () => {
+        this.scanCache = null;
+        this.scanWarning = null;
+        this.scanWatcher?.close();
+        this.scanWatcher = null;
+      });
+    } catch {
+      this.scanWatcher = null;
     }
   }
 

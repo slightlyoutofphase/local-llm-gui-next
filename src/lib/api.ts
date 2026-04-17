@@ -120,6 +120,13 @@ export interface UploadMediaAttachmentsResponse {
   dbRevision: number;
 }
 
+export interface DeletePendingMediaAttachmentsResponse {
+  /** The latest backend database revision. */
+  dbRevision: number;
+  /** The identifiers of attachments removed from the backend staging area. */
+  deletedAttachmentIds: string[];
+}
+
 /** Supported backend export formats for persisted chats. */
 export type ChatExportFormat = "json" | "markdown";
 
@@ -453,12 +460,42 @@ export async function downloadChatsExport(
   }
 
   const dispositionHeader = response.headers.get("Content-Disposition") ?? "";
-  const filenameMatch = dispositionHeader.match(/filename="?([^";]+)"?/i);
+  const filename = parseContentDispositionFilename(dispositionHeader);
 
   return {
     blob: await response.blob(),
-    filename: filenameMatch?.[1] ?? (format === "json" ? "chats-export.json" : "chats-export.md"),
+    filename: filename ?? (format === "json" ? "chats-export.json" : "chats-export.md"),
   };
+}
+
+function parseContentDispositionFilename(disposition: string): string | null {
+  const filenameStarMatch = disposition.match(/filename\*\s*=\s*([^;]+)/i);
+
+  if (filenameStarMatch?.[1]) {
+    let rawValue = filenameStarMatch[1].trim();
+
+    if (rawValue.startsWith("UTF-8''") || rawValue.startsWith("utf-8''")) {
+      rawValue = rawValue.slice(rawValue.indexOf("''") + 2);
+    }
+
+    rawValue = rawValue.replace(/^"|"$/g, "");
+
+    try {
+      return sanitizeExportFilename(decodeURIComponent(rawValue));
+    } catch {
+      return sanitizeExportFilename(rawValue);
+    }
+  }
+
+  const filenameMatch = disposition.match(/filename\s*=\s*(?:"([^"]+)"|([^;\s]+))/i);
+  const rawFilename = filenameMatch ? (filenameMatch[1] ?? filenameMatch[2]) : null;
+
+  return rawFilename ? sanitizeExportFilename(rawFilename) : null;
+}
+
+function sanitizeExportFilename(filename: string): string | null {
+  const normalized = filename.replace(/["'\\/\r\n]/g, "_").trim();
+  return normalized.length > 0 ? normalized : null;
 }
 
 /**
@@ -692,6 +729,17 @@ export async function uploadMediaAttachments(
   });
 }
 
+export async function deletePendingMediaAttachments(
+  chatId: string,
+  messageId: string,
+  attachmentIds: string[],
+): Promise<DeletePendingMediaAttachmentsResponse> {
+  return await requestJson<DeletePendingMediaAttachmentsResponse>("/api/media/pending", {
+    body: JSON.stringify({ chatId, messageId, attachmentIds }),
+    method: "DELETE",
+  });
+}
+
 /**
  * Returns the backend URL that serves a persisted media attachment.
  */
@@ -837,6 +885,9 @@ export function subscribeToJsonSse<TPayload>(
 async function requestJson<TPayload>(input: string, init?: TimedRequestInit): Promise<TPayload> {
   const { timeoutMs = JSON_REQUEST_TIMEOUT_MS, ...fetchInit } = init ?? {};
   const headers = new Headers(fetchInit.headers);
+  const isIdempotent = !fetchInit.method || fetchInit.method.toUpperCase() === "GET";
+  const maxAttempts = isIdempotent ? 3 : 1;
+  const baseDelayMs = 150;
 
   if (typeof fetchInit.body === "string" && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
@@ -846,34 +897,153 @@ async function requestJson<TPayload>(input: string, init?: TimedRequestInit): Pr
     headers.set("Accept", "application/json");
   }
 
-  const response = await fetch(input, {
-    ...fetchInit,
-    headers,
-    signal: buildTimedRequestSignal(fetchInit.signal, timeoutMs),
-  });
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const { signal, cleanup } = buildTimedRequestSignal(fetchInit.signal, timeoutMs);
 
-  if (!response.ok) {
-    throw new Error(await readErrorResponseMessage(response));
+    try {
+      const response = await fetch(input, {
+        ...fetchInit,
+        headers,
+        signal,
+      });
+
+      if (response.ok) {
+        return (await response.json()) as TPayload;
+      }
+
+      const responseError = new Error(await readErrorResponseMessage(response));
+      const retryableStatus = [502, 503, 504];
+
+      if (isIdempotent && attempt < maxAttempts && retryableStatus.includes(response.status)) {
+        await delay(baseDelayMs * 2 ** (attempt - 1));
+        continue;
+      }
+
+      throw responseError;
+    } catch (error) {
+      if (attempt < maxAttempts && isIdempotent && isRetryableRequestError(error)) {
+        await delay(baseDelayMs * 2 ** (attempt - 1));
+        continue;
+      }
+
+      throw error;
+    } finally {
+      cleanup();
+    }
   }
 
-  return (await response.json()) as TPayload;
+  throw new Error("Failed to complete the request after retrying.");
 }
 
-function buildTimedRequestSignal(
+export function buildTimedRequestSignal(
   existingSignal?: AbortSignal | null,
   timeoutMs = JSON_REQUEST_TIMEOUT_MS,
-): AbortSignal {
-  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+): { signal: AbortSignal; cleanup: () => void } {
+  const timeoutResult =
+    typeof AbortSignal.timeout === "function"
+      ? { signal: AbortSignal.timeout(timeoutMs), cleanup: () => {} }
+      : createTimeoutAbortSignal(timeoutMs);
 
   if (!existingSignal) {
-    return timeoutSignal;
+    return {
+      signal: timeoutResult.signal,
+      cleanup: timeoutResult.cleanup,
+    };
   }
 
   if (typeof AbortSignal.any === "function") {
-    return AbortSignal.any([existingSignal, timeoutSignal]);
+    return {
+      signal: AbortSignal.any([existingSignal, timeoutResult.signal]),
+      cleanup: timeoutResult.cleanup,
+    };
   }
 
-  return existingSignal;
+  const combinedController = new AbortController();
+  const propagateAbort = (): void => {
+    combinedController.abort();
+  };
+
+  existingSignal.addEventListener("abort", propagateAbort, { once: true });
+  timeoutResult.signal.addEventListener("abort", propagateAbort, { once: true });
+  combinedController.signal.addEventListener(
+    "abort",
+    () => {
+      existingSignal.removeEventListener("abort", propagateAbort);
+      timeoutResult.signal.removeEventListener("abort", propagateAbort);
+      timeoutResult.cleanup();
+    },
+    { once: true },
+  );
+
+  return {
+    signal: combinedController.signal,
+    cleanup: (): void => {
+      existingSignal.removeEventListener("abort", propagateAbort);
+      timeoutResult.signal.removeEventListener("abort", propagateAbort);
+      timeoutResult.cleanup();
+    },
+  };
+}
+
+function createTimeoutAbortSignal(timeoutMs: number): { signal: AbortSignal; cleanup: () => void } {
+  const controller = new AbortController();
+  const timeoutHandle = globalThis.setTimeout(() => controller.abort(), timeoutMs);
+
+  return {
+    signal: controller.signal,
+    cleanup: (): void => {
+      clearTimeout(timeoutHandle);
+    },
+  };
+}
+
+export function isRetryableRequestError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  if (error.name === "AbortError") {
+    return false;
+  }
+
+  const normalizedMessage = error.message.toLowerCase();
+  const normalizedCode =
+    typeof (error as { code?: unknown }).code === "string"
+      ? (error as { code?: string }).code.toLowerCase()
+      : "";
+  const retryableErrorCodes = new Set([
+    "econnreset",
+    "econnrefused",
+    "enotfound",
+    "enetunreach",
+    "eai_again",
+    "eai",
+    "etimedout",
+    "ecancelled",
+    "econnaborted",
+  ]);
+
+  return (
+    retryableErrorCodes.has(normalizedCode) ||
+    normalizedMessage.includes("network") ||
+    normalizedMessage.includes("failed to fetch") ||
+    normalizedMessage.includes("network request failed") ||
+    normalizedMessage.includes("timed out") ||
+    normalizedMessage.includes("connection") ||
+    normalizedMessage.includes("connection reset") ||
+    normalizedMessage.includes("connection aborted") ||
+    normalizedMessage.includes("socket hang up") ||
+    normalizedMessage.includes("econnreset") ||
+    normalizedMessage.includes("econnrefused") ||
+    normalizedMessage.includes("enotfound") ||
+    normalizedMessage.includes("enetunreach") ||
+    normalizedMessage.includes("eai") ||
+    normalizedMessage.includes("etimed out")
+  );
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /** Streams a JSON SSE request and dispatches chat-completion deltas to handlers. */

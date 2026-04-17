@@ -89,10 +89,27 @@ export function subscribeToJsonSse<TPayload>(
   let currentEventSource: EventSource | null = null;
   let reconnectAttempt = 0;
   let reconnectTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  let openListener: (() => void) | null = null;
+  let listener: ((event: MessageEvent<string>) => void) | null = null;
+  let errorListener: (() => void) | null = null;
 
   const cleanupCurrentSource = (): void => {
     if (!currentEventSource) {
       return;
+    }
+
+    if (typeof currentEventSource.removeEventListener === "function") {
+      if (openListener) {
+        currentEventSource.removeEventListener("open", openListener as EventListener);
+      }
+
+      if (listener) {
+        currentEventSource.removeEventListener(options.eventName, listener as EventListener);
+      }
+
+      if (errorListener) {
+        currentEventSource.removeEventListener("error", errorListener as EventListener);
+      }
     }
 
     currentEventSource.close();
@@ -167,33 +184,32 @@ export function subscribeToJsonSse<TPayload>(
     const eventSource = new EventSourceConstructor(options.path);
     currentEventSource = eventSource;
 
-    const openListener = (): void => {
+    openListener = (): void => {
       reconnectAttempt = 0;
       options.onOpen?.();
     };
 
-    const listener = (event: MessageEvent<string>): void => {
+    listener = (event: MessageEvent<string>): void => {
       try {
         const parsedEvent = JSON.parse(event.data) as JsonSseEnvelope<TPayload>;
 
         reconnectAttempt = 0;
         options.onOpen?.();
         options.onPayload(parsedEvent.payload);
-      } catch {
-        cleanupCurrentSource();
-        clearReconnectTimer();
+      } catch (error) {
+        const parseError =
+          error instanceof Error ? error : new Error(INVALID_SSE_EVENT_PAYLOAD_MESSAGE);
 
-        const parseError = new Error(INVALID_SSE_EVENT_PAYLOAD_MESSAGE);
-
-        if (reconnectOptions === false) {
-          reportFatalFailure(parseError, reconnectAttempt + 1);
-          return;
-        }
-
-        scheduleReconnect(parseError);
+        options.onError?.({
+          attempt: reconnectAttempt + 1,
+          error: parseError,
+          kind: "transient",
+        });
+        return;
       }
     };
-    const errorListener = (): void => {
+
+    errorListener = (): void => {
       cleanupCurrentSource();
 
       if (closed) {
@@ -260,6 +276,10 @@ export async function streamJsonSseRequest<TPayload>(options: {
     try {
       chunk = await reader.read();
     } catch (error) {
+      if (options.signal?.aborted && error instanceof Error && error.name === "AbortError") {
+        break;
+      }
+
       if (options.signal?.aborted) {
         break;
       }
@@ -327,6 +347,6 @@ function parseJsonSseSegment(segment: string): Record<string, unknown> | null {
   try {
     return JSON.parse(joinedPayload) as Record<string, unknown>;
   } catch {
-    throw new Error(INVALID_SSE_JSON_PAYLOAD_MESSAGE);
+    return null;
   }
 }

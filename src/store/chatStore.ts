@@ -22,6 +22,7 @@ import {
   streamToolConfirmationResolution,
   subscribeToJsonSse,
   uploadMediaAttachments,
+  deletePendingMediaAttachments,
 } from "../lib/api";
 import {
   getAttachmentCapabilities,
@@ -608,23 +609,24 @@ export const useChatStore = create<ChatStoreState>((set, get) => ({
       return;
     }
 
+    let activeChatId = get().activeChatId;
+    const messageId = crypto.randomUUID();
+
     set({ sending: true });
 
     try {
-      let chatId = get().activeChatId;
+      if (!activeChatId) {
+        activeChatId = await get().createChat({ preferActiveRuntime: true });
 
-      if (!chatId) {
-        chatId = await get().createChat({ preferActiveRuntime: true });
-
-        if (!chatId) {
+        if (!activeChatId) {
           set({ sending: false });
           return;
         }
       }
 
+      const chatId = activeChatId;
       const sentAttachmentIds = new Set(pendingAttachments.map((attachment) => attachment.id));
       let uploadedAttachments: ChatMessageRecord["mediaAttachments"] = [];
-      const messageId = crypto.randomUUID();
 
       if (pendingAttachments.length > 0) {
         const uploadResponse = await uploadMediaAttachments(
@@ -694,6 +696,18 @@ export const useChatStore = create<ChatStoreState>((set, get) => ({
         setState: set,
       });
     } catch (error) {
+      if (typeof activeChatId === "string" && pendingAttachments.length > 0) {
+        try {
+          await deletePendingMediaAttachments(
+            activeChatId,
+            messageId,
+            pendingAttachments.map((attachment) => attachment.id),
+          );
+        } catch {
+          // Best-effort cleanup; preserve the current error for user feedback.
+        }
+      }
+
       set({
         error:
           error instanceof Error
@@ -862,16 +876,25 @@ export const useChatStore = create<ChatStoreState>((set, get) => ({
       return;
     }
 
+    await refreshChatIfMessageMissing(chatId, assistantMessageId, get, set);
+
     const targetMessage = (get().messagesByChatId[chatId] ?? []).find(
       (message) => message.id === assistantMessageId,
     );
     const confirmation = targetMessage ? getToolConfirmationMetadata(targetMessage) : null;
 
     if (!targetMessage || !confirmation || confirmation.state !== "pending") {
+      if (!targetMessage) {
+        set({
+          error: "The tool-confirmation message was removed before approval could be applied.",
+          sending: false,
+        });
+      }
+
       return;
     }
 
-    const previousMetadata = targetMessage.metadata;
+    const previousMetadata = { ...targetMessage.metadata };
 
     set({ sending: true });
 
@@ -891,9 +914,39 @@ export const useChatStore = create<ChatStoreState>((set, get) => ({
       setState: set,
     });
 
+    const currentMessage = (get().messagesByChatId[chatId] ?? []).find(
+      (message) => message.id === assistantMessageId,
+    );
+
     if (!succeeded) {
-      updateStoredMessageMetadata(chatId, assistantMessageId, set, () => previousMetadata);
-      set({ sending: false });
+      if (!currentMessage) {
+        await refreshChatIfMessageMissing(chatId, assistantMessageId, get, set);
+      } else {
+        set((state) => ({
+          messagesByChatId: updateCachedChatMessages({
+            activeChatId: state.activeChatId,
+            activeGenerationChatId: state.activeGenerationChatId,
+            chatId,
+            messages:
+              state.messagesByChatId[chatId]?.map((message) =>
+                message.id === assistantMessageId
+                  ? { ...message, metadata: previousMetadata }
+                  : message,
+              ) ?? [],
+            messagesByChatId: state.messagesByChatId,
+          }),
+          sending: false,
+        }));
+      }
+
+      return;
+    }
+
+    if (
+      !currentMessage ||
+      getToolConfirmationMetadata(currentMessage)?.state !== (approved ? "approved" : "rejected")
+    ) {
+      await refreshChatIfMessageMissing(chatId, assistantMessageId, get, set);
     }
   },
   stopMessageGeneration: async () => {
@@ -901,6 +954,10 @@ export const useChatStore = create<ChatStoreState>((set, get) => ({
       abortController: get().activeGenerationAbortController,
       stopRemoteGeneration: stopGeneration,
     });
+
+    if (get().sending) {
+      set({ sending: false });
+    }
   },
   connectDebugStream: () => {
     shouldReconnectDebugStream = true;
@@ -1078,10 +1135,35 @@ async function runAssistantStream(options: {
   let assistantContent = "";
   let reasoningContent = "";
   let streamingUpdateScheduled = false;
+  let streamingUpdateTimer:
+    | ReturnType<typeof requestAnimationFrame>
+    | ReturnType<typeof setTimeout>
+    | null = null;
+  let streamingUpdateCanceled = false;
   const structuredOutputSettings = getActiveStructuredOutputSettings(getState().modelContext);
 
-  const flushStreamingUpdate = (): void => {
+  const cancelStreamingUpdate = (): void => {
     streamingUpdateScheduled = false;
+    streamingUpdateCanceled = true;
+
+    if (streamingUpdateTimer !== null) {
+      if (typeof cancelAnimationFrame === "function") {
+        cancelAnimationFrame(streamingUpdateTimer as number);
+      } else {
+        clearTimeout(streamingUpdateTimer as ReturnType<typeof setTimeout>);
+      }
+    }
+
+    streamingUpdateTimer = null;
+  };
+
+  const flushStreamingUpdate = (): void => {
+    if (streamingUpdateCanceled) {
+      return;
+    }
+
+    streamingUpdateScheduled = false;
+    streamingUpdateTimer = null;
     updateStreamingMessage(chatId, streamingMessage.id, setState, {
       content: assistantContent,
       metadata: {
@@ -1091,14 +1173,16 @@ async function runAssistantStream(options: {
   };
 
   const scheduleStreamingUpdate = (): void => {
-    if (!streamingUpdateScheduled) {
-      streamingUpdateScheduled = true;
+    if (streamingUpdateScheduled || streamingUpdateCanceled) {
+      return;
+    }
 
-      if (typeof requestAnimationFrame === "function") {
-        requestAnimationFrame(flushStreamingUpdate);
-      } else {
-        setTimeout(flushStreamingUpdate, 16);
-      }
+    streamingUpdateScheduled = true;
+
+    if (typeof requestAnimationFrame === "function") {
+      streamingUpdateTimer = requestAnimationFrame(flushStreamingUpdate);
+    } else {
+      streamingUpdateTimer = setTimeout(flushStreamingUpdate, 16);
     }
   };
 
@@ -1196,17 +1280,20 @@ async function runAssistantStream(options: {
     return true;
   } catch (error) {
     const generationWasAborted = generationAbortController.signal.aborted === true;
-    const shouldPersistTruncatedStructuredOutput =
-      structuredOutputSettings.mode !== "off" &&
-      (assistantContent.length > 0 || reasoningContent.length > 0);
+    const hasPartialOutput = assistantContent.length > 0 || reasoningContent.length > 0;
+    let persistedAssistantMessage: ChatMessageRecord | null = null;
 
-    if (shouldPersistTruncatedStructuredOutput) {
-      const structuredOutputMetadata = validateStructuredOutputResult({
-        content: assistantContent,
-        mode: structuredOutputSettings.mode,
-        schemaText: structuredOutputSettings.schemaText,
-        truncated: true,
-      });
+    if (hasPartialOutput) {
+      const structuredOutputMetadata =
+        structuredOutputSettings.mode !== "off"
+          ? validateStructuredOutputResult({
+              content: assistantContent,
+              mode: structuredOutputSettings.mode,
+              schemaText: structuredOutputSettings.schemaText,
+              truncated: true,
+            })
+          : null;
+
       const assistantMessageResponse = await appendChatMessage(
         chatId,
         "assistant",
@@ -1214,8 +1301,13 @@ async function runAssistantStream(options: {
         [],
         reasoningContent || undefined,
         true,
-        structuredOutputMetadata ? { structuredOutput: structuredOutputMetadata } : {},
+        {
+          ...(structuredOutputMetadata ? { structuredOutput: structuredOutputMetadata } : {}),
+          truncated: true,
+        },
       );
+
+      persistedAssistantMessage = assistantMessageResponse.message;
 
       setState((state) => ({
         knownDbRevision: Math.max(state.knownDbRevision, assistantMessageResponse.dbRevision),
@@ -1243,8 +1335,12 @@ async function runAssistantStream(options: {
         activeChatId: state.activeChatId,
         activeGenerationChatId: state.activeGenerationChatId,
         chatId,
-        messages: shouldPersistTruncatedStructuredOutput
-          ? (state.messagesByChatId[chatId] ?? [])
+        messages: hasPartialOutput && persistedAssistantMessage
+          ? replaceStreamingMessage(
+              state.messagesByChatId[chatId] ?? [],
+              streamingMessage.id,
+              persistedAssistantMessage,
+            )
           : removeStreamingMessage(state.messagesByChatId[chatId] ?? [], streamingMessage.id),
         messagesByChatId: state.messagesByChatId,
       }),
@@ -1253,6 +1349,8 @@ async function runAssistantStream(options: {
 
     return false;
   } finally {
+    cancelStreamingUpdate();
+
     setState((state) => ({
       activeGenerationAbortController: clearAbortControllerIfCurrent(
         state.activeGenerationAbortController,
@@ -1305,7 +1403,27 @@ async function synchronizeChatStoreFromUiCache(
 ): Promise<void> {
   const currentState = getState();
 
-  if (!currentState.hydrated || uiCache.dbRevision <= currentState.knownDbRevision) {
+  if (!currentState.hydrated) {
+    return;
+  }
+
+  if (uiCache.dbRevision < currentState.knownDbRevision) {
+    return;
+  }
+
+  if (uiCache.dbRevision === currentState.knownDbRevision) {
+    if (
+      uiCache.lastChatId &&
+      uiCache.lastChatId !== currentState.activeChatId &&
+      currentState.chats.some((chat) => chat.id === uiCache.lastChatId)
+    ) {
+      await getState().selectChat(uiCache.lastChatId);
+    }
+
+    if (uiCache.debugPanelOpen !== currentState.debugPanelOpen) {
+      setState({ debugPanelOpen: uiCache.debugPanelOpen });
+    }
+
     return;
   }
 
@@ -1704,6 +1822,43 @@ function getToolConfirmationMetadata(message: ChatMessageRecord): ToolConfirmati
 }
 
 /** Atomically updates a stored message's metadata record. */
+export async function refreshChatIfMessageMissing(
+  chatId: string,
+  assistantMessageId: string,
+  getState: typeof useChatStore.getState,
+  setState: typeof useChatStore.setState,
+  fetchChatFn: typeof getChat = getChat,
+): Promise<boolean> {
+  const currentMessageExists = (getState().messagesByChatId[chatId] ?? []).some(
+    (message) => message.id === assistantMessageId,
+  );
+
+  if (currentMessageExists) {
+    return true;
+  }
+
+  try {
+    const chatResponse = await fetchChatFn(chatId, { limit: CHAT_HISTORY_PAGE_SIZE });
+
+    setState((state) => ({
+      chats: mergeUpdatedChat(state.chats, chatResponse.chat),
+      knownDbRevision: Math.max(state.knownDbRevision, chatResponse.dbRevision),
+      chatPaginationById: {
+        ...state.chatPaginationById,
+        [chatId]: toChatPaginationState(chatResponse),
+      },
+      messagesByChatId: {
+        ...state.messagesByChatId,
+        [chatId]: chatResponse.messages,
+      },
+    }));
+
+    return chatResponse.messages.some((message) => message.id === assistantMessageId);
+  } catch {
+    return false;
+  }
+}
+
 function updateStoredMessageMetadata(
   chatId: string,
   messageId: string,

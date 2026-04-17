@@ -411,4 +411,78 @@ describe("cleanupFinalizedPendingAttachments", () => {
       await removeBackendTestScratchDir(rootDir);
     }
   });
+
+  test("preserves promoted final attachments when pending restoration is unsafe", async () => {
+    const rootDir = await createBackendTestScratchDir(
+      "local-llm-gui-attachment-lifecycle-restore-collision",
+    );
+
+    try {
+      const mediaDir = path.join(rootDir, "media");
+      const stagedDirectory = path.join(mediaDir, "chat-1", ".pending", "message-1");
+      const stagedAttachment = createPendingAttachment("attachment-1");
+
+      stagedAttachment.fileName = "first.png";
+      stagedAttachment.filePath = path.join(stagedDirectory, "first.png");
+
+      await mkdir(stagedDirectory, { recursive: true });
+      await writeFile(stagedAttachment.filePath, Buffer.from([0, 1, 2, 3]));
+
+      const finalAttachments = await promotePendingAttachments({
+        chatId: "chat-1",
+        mediaDir,
+        messageId: "message-1",
+        pendingAttachments: [stagedAttachment],
+      });
+
+      await writeFile(stagedAttachment.filePath, Buffer.from([9, 9, 9]));
+
+      await rollbackPromotedPendingAttachments({
+        finalAttachments,
+        pendingAttachments: [stagedAttachment],
+      });
+
+      expect(existsSync(finalAttachments[0]!.filePath)).toBe(true);
+      expect(existsSync(stagedAttachment.filePath)).toBe(true);
+    } finally {
+      await removeBackendTestScratchDir(rootDir);
+    }
+  });
+
+  test("removes duplicate promoted final attachments when pending restoration already exists with identical content", async () => {
+    const rootDir = await createBackendTestScratchDir(
+      "local-llm-gui-attachment-lifecycle-restore-duplicate",
+    );
+
+    try {
+      const mediaDir = path.join(rootDir, "media");
+      const stagedDirectory = path.join(mediaDir, "chat-1", ".pending", "message-1");
+      const stagedAttachment = createPendingAttachment("attachment-1");
+
+      stagedAttachment.fileName = "first.png";
+      stagedAttachment.filePath = path.join(stagedDirectory, "first.png");
+
+      await mkdir(stagedDirectory, { recursive: true });
+      await writeFile(stagedAttachment.filePath, Buffer.from([0, 1, 2, 3]));
+
+      const finalAttachments = await promotePendingAttachments({
+        chatId: "chat-1",
+        mediaDir,
+        messageId: "message-1",
+        pendingAttachments: [stagedAttachment],
+      });
+
+      await writeFile(stagedAttachment.filePath, Buffer.from([0, 1, 2, 3]));
+
+      await rollbackPromotedPendingAttachments({
+        finalAttachments,
+        pendingAttachments: [stagedAttachment],
+      });
+
+      expect(existsSync(stagedAttachment.filePath)).toBe(true);
+      expect(existsSync(finalAttachments[0]!.filePath)).toBe(false);
+    } finally {
+      await removeBackendTestScratchDir(rootDir);
+    }
+  });
 });

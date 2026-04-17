@@ -1,4 +1,4 @@
-import { open, readFile, unlink, writeFile } from "node:fs/promises";
+import { open, unlink, writeFile } from "node:fs/promises";
 import { execFile, spawn, type ChildProcessByStdio } from "node:child_process";
 import { basename } from "node:path";
 import type { Readable } from "node:stream";
@@ -15,7 +15,7 @@ import type {
 } from "../lib/contracts";
 import { calculateRuntimeLoadTimeoutMs } from "../lib/runtimeLoad";
 import {
-  buildBinaryAttachmentReplayDescriptor,
+  buildBinaryAttachmentReplayDescriptorFromFile,
   createContentPartFromBinaryAttachmentReplayDescriptor,
   loadBinaryAttachmentReplayDescriptor,
   persistBinaryAttachmentReplayDescriptor,
@@ -49,6 +49,10 @@ interface LoadModelOptions {
   loadPreset: LoadInferencePreset;
   systemPromptPreset: SystemPromptPreset;
 }
+
+type PrepareChatCompletionRequestBodyResult =
+  | { body: Record<string, unknown> }
+  | { errorResponse: Response };
 
 /** Priority level for managed requests — `"foreground"` preempts `"background"`. */
 type ManagedRequestPriority = "background" | "foreground";
@@ -133,6 +137,12 @@ export class LlamaServerManager {
     chatId: string | null,
     downstreamSignal: AbortSignal,
   ): { complete: () => void; signal: AbortSignal } | Response {
+    if (this.activeRequestAbortController && this.activeRequestPriority === "background") {
+      const backgroundAbortController = this.activeRequestAbortController;
+      backgroundAbortController.abort();
+      this.clearActiveController(backgroundAbortController);
+    }
+
     if (this.activeGenerationAbortController) {
       return Response.json(
         {
@@ -148,22 +158,31 @@ export class LlamaServerManager {
     }
 
     const generationAbortController = new AbortController();
+    const requestAbortController = new AbortController();
     const abortGeneration = (): void => {
       generationAbortController.abort();
+      requestAbortController.abort();
     };
 
     downstreamSignal.addEventListener("abort", abortGeneration, { once: true });
     this.activeGenerationAbortController = generationAbortController;
     this.activeGenerationChatId = chatId;
+    this.activeRequestAbortController = requestAbortController;
+    this.activeRequestPriority = "foreground";
+    this.activeRequestChatId = chatId;
     this.activeGenerationStopping = false;
     this.activeGenerationSettledPromise = new Promise<void>((resolve) => {
       this.resolveActiveGenerationSettled = resolve;
+    });
+    this.activeRequestSettledPromise = new Promise<void>((resolve) => {
+      this.resolveActiveRequestSettled = resolve;
     });
 
     return {
       complete: () => {
         downstreamSignal.removeEventListener("abort", abortGeneration);
-        this.clearActiveGeneration(generationAbortController);
+        this.clearActiveController(generationAbortController);
+        this.clearActiveController(requestAbortController);
       },
       signal: generationAbortController.signal,
     };
@@ -287,7 +306,7 @@ export class LlamaServerManager {
       activeGenerationAbortController?.abort();
 
       if (activeGenerationAbortController) {
-        this.clearActiveGeneration(activeGenerationAbortController);
+        this.clearActiveController(activeGenerationAbortController);
       }
 
       this.activeModel = null;
@@ -313,16 +332,22 @@ export class LlamaServerManager {
 
     this.unloading = true;
     const activeGenerationAbortController = this.activeGenerationAbortController;
+    const activeRequestAbortController = this.activeRequestAbortController;
 
     activeGenerationAbortController?.abort();
 
     if (activeGenerationAbortController) {
-      this.clearActiveGeneration(activeGenerationAbortController);
+      this.clearActiveController(activeGenerationAbortController);
     }
 
-    this.activeRequestAbortController?.abort();
-    this.activeRequestPriority = null;
-    this.activeRequestChatId = null;
+    if (
+      activeRequestAbortController &&
+      activeRequestAbortController !== activeGenerationAbortController
+    ) {
+      activeRequestAbortController.abort();
+      this.clearActiveController(activeRequestAbortController);
+    }
+
     this.debugLogService.serverLog(`Unloading llama-server (${reason}).`);
 
     const childProcess = this.childProcess;
@@ -367,7 +392,13 @@ export class LlamaServerManager {
       this.activeGenerationStopping = true;
       this.debugLogService.serverLog("Aborting the active generation.");
       activeGenerationAbortController.abort();
-      this.activeRequestAbortController?.abort();
+
+      if (
+        this.activeRequestAbortController &&
+        this.activeRequestAbortController !== activeGenerationAbortController
+      ) {
+        this.activeRequestAbortController.abort();
+      }
 
       await activeGenerationSettledPromise;
 
@@ -404,15 +435,15 @@ export class LlamaServerManager {
     requestBody: Record<string, unknown>,
     downstreamSignal: AbortSignal,
   ): Promise<Response> {
-    const preparedRequestBody = await this.prepareChatCompletionRequestBody(requestBody);
+    const preparedRequestBodyResult = await this.prepareChatCompletionRequestBody(requestBody);
 
-    if (preparedRequestBody instanceof Response) {
-      return preparedRequestBody;
+    if ("errorResponse" in preparedRequestBodyResult) {
+      return preparedRequestBodyResult.errorResponse;
     }
 
     return this.proxyJsonRequest(
       "/v1/chat/completions",
-      preparedRequestBody,
+      preparedRequestBodyResult.body,
       downstreamSignal,
       "foreground",
       typeof requestBody["chatId"] === "string" ? requestBody["chatId"] : null,
@@ -461,14 +492,23 @@ export class LlamaServerManager {
     const activeRequestAbortController = this.activeRequestAbortController;
 
     activeGenerationAbortController?.abort();
-    activeRequestAbortController?.abort();
 
-    if (activeGenerationAbortController) {
-      this.clearActiveGeneration(activeGenerationAbortController);
+    if (
+      activeRequestAbortController &&
+      activeRequestAbortController !== activeGenerationAbortController
+    ) {
+      activeRequestAbortController.abort();
     }
 
-    if (activeRequestAbortController) {
-      this.clearActiveRequest(activeRequestAbortController);
+    if (activeGenerationAbortController) {
+      this.clearActiveController(activeGenerationAbortController);
+    }
+
+    if (
+      activeRequestAbortController &&
+      activeRequestAbortController !== activeGenerationAbortController
+    ) {
+      this.clearActiveController(activeRequestAbortController);
     }
 
     this.activeServerBaseUrl = null;
@@ -558,7 +598,17 @@ export class LlamaServerManager {
         const backgroundAbortController = this.activeRequestAbortController;
 
         backgroundAbortController.abort();
-        this.clearActiveRequest(backgroundAbortController);
+        this.clearActiveController(backgroundAbortController);
+      } else if (requestPriority === "foreground" && this.activeRequestPriority === "foreground") {
+        this.debugLogService.verboseServerLog(
+          `Rejecting ${endpoint} because another foreground request is already in progress.`,
+        );
+        return Response.json(
+          { error: "Another generation request is already in progress." },
+          {
+            status: 409,
+          },
+        );
       } else {
         this.debugLogService.verboseServerLog(
           `Rejecting ${endpoint} because another generation request is already in progress.`,
@@ -573,12 +623,11 @@ export class LlamaServerManager {
     }
 
     const payload: Record<string, unknown> = {
-      cache_prompt: true,
       ...requestBody,
     };
     const isStreamingRequest = payload["stream"] === true;
     const requestMessageCount = Array.isArray(payload["messages"]) ? payload["messages"].length : 0;
-    const abortController = new AbortController();
+    const abortController = this.activeRequestAbortController ?? new AbortController();
     const abortActiveRequest = (): void => {
       abortController.abort();
     };
@@ -657,8 +706,8 @@ export class LlamaServerManager {
     }
   }
 
-  /** Releases the active request tracking when a controller matches the current one. */
-  private clearActiveRequest(abortController: AbortController): void {
+  /** Releases the tracked state for a controller when it settles. */
+  private clearActiveController(abortController: AbortController): void {
     if (this.activeRequestAbortController === abortController) {
       this.activeRequestAbortController = null;
       this.activeRequestPriority = null;
@@ -670,10 +719,7 @@ export class LlamaServerManager {
       this.resolveActiveRequestSettled = null;
       resolveActiveRequestSettled?.();
     }
-  }
 
-  /** Releases the active generation session when the matching controller settles. */
-  private clearActiveGeneration(abortController: AbortController): void {
     if (this.activeGenerationAbortController === abortController) {
       this.activeGenerationAbortController = null;
       this.activeGenerationChatId = null;
@@ -685,6 +731,11 @@ export class LlamaServerManager {
       this.resolveActiveGenerationSettled = null;
       resolveActiveGenerationSettled?.();
     }
+  }
+
+  /** Releases the active request tracking when a controller matches the current one. */
+  private clearActiveRequest(abortController: AbortController): void {
+    this.clearActiveController(abortController);
   }
 
   /** Starts tracking a newly proxied request until its fetch or stream fully unwinds. */
@@ -707,13 +758,14 @@ export class LlamaServerManager {
    */
   private async prepareChatCompletionRequestBody(
     requestBody: Record<string, unknown>,
-  ): Promise<Record<string, unknown> | Response> {
+  ): Promise<PrepareChatCompletionRequestBodyResult> {
     const settings = this.activeLoadPreset?.settings;
     const sanitizedBody: Record<string, unknown> = { ...requestBody };
     const rawRequestMessages = Array.isArray(sanitizedBody["messages"])
       ? [...(sanitizedBody["messages"] as unknown[])]
       : [];
 
+    const shouldCachePrompt = requestBody["cache_prompt"] === true;
     delete sanitizedBody["cache_prompt"];
     delete sanitizedBody["chatId"];
     delete sanitizedBody["chat_template_kwargs"];
@@ -732,7 +784,7 @@ export class LlamaServerManager {
     const normalizedMessages = await this.normalizeChatMessages(rawRequestMessages);
 
     if (normalizedMessages instanceof Response) {
-      return normalizedMessages;
+      return { errorResponse: normalizedMessages };
     }
 
     let requestMessages = [...normalizedMessages];
@@ -747,7 +799,7 @@ export class LlamaServerManager {
     if (settings) {
       const boundedMessages = this.applyOverflowStrategy(requestMessages, settings);
 
-      if (boundedMessages instanceof Response) {
+      if ("errorResponse" in boundedMessages) {
         return boundedMessages;
       }
 
@@ -756,13 +808,13 @@ export class LlamaServerManager {
 
     const nextBody: Record<string, unknown> = {
       ...sanitizedBody,
-      cache_prompt: true,
+      ...(shouldCachePrompt ? { cache_prompt: true } : {}),
       messages: requestMessages,
       stream: sanitizedBody["stream"] === true,
     };
 
     if (!settings) {
-      return nextBody;
+      return { body: nextBody };
     }
 
     nextBody["chat_template_kwargs"] = {
@@ -789,20 +841,22 @@ export class LlamaServerManager {
         type: "json_object",
       };
 
-      return nextBody;
+      return { body: nextBody };
     }
 
     if (settings.structuredOutputMode !== "json_schema") {
-      return nextBody;
+      return { body: nextBody };
     }
 
     const schemaText = settings.structuredOutputSchema?.trim();
 
     if (!schemaText) {
-      return Response.json(
-        { error: "The active load preset is set to JSON Schema mode, but no schema is saved." },
-        { status: 400 },
-      );
+      return {
+        errorResponse: Response.json(
+          { error: "The active load preset is set to JSON Schema mode, but no schema is saved." },
+          { status: 400 },
+        ),
+      };
     }
 
     let parsedSchema: Record<string, unknown>;
@@ -810,14 +864,21 @@ export class LlamaServerManager {
     try {
       parsedSchema = JSON.parse(schemaText) as Record<string, unknown>;
     } catch {
-      return Response.json({ error: "The active JSON schema is not valid JSON." }, { status: 400 });
+      return {
+        errorResponse: Response.json(
+          { error: "The active JSON schema is not valid JSON." },
+          { status: 400 },
+        ),
+      };
     }
 
     if (schemaContainsUnsupportedReference(parsedSchema)) {
-      return Response.json(
-        { error: "Schemas containing $ref are not supported in this application version." },
-        { status: 400 },
-      );
+      return {
+        errorResponse: Response.json(
+          { error: "Schemas containing $ref are not supported in this application version." },
+          { status: 400 },
+        ),
+      };
     }
 
     nextBody["response_format"] = {
@@ -825,26 +886,28 @@ export class LlamaServerManager {
       type: "json_schema",
     };
 
-    return nextBody;
+    return { body: nextBody };
   }
 
   /** Applies the active context overflow strategy to the prepared request messages. */
   private applyOverflowStrategy(
     requestMessages: Record<string, unknown>[],
     settings: LoadInferencePreset["settings"],
-  ): Record<string, unknown>[] | Response {
+  ): Record<string, unknown>[] | { errorResponse: Response } {
     if (settings.overflowStrategy === "rolling-window") {
       if (settings.contextShift) {
         return requestMessages;
       }
 
-      return Response.json(
-        {
-          error:
-            "Rolling Window requires Context Shift to be enabled. Reload the model with Context Shift enabled before using this overflow mode.",
-        },
-        { status: 409 },
-      );
+      return {
+        errorResponse: Response.json(
+          {
+            error:
+              "Rolling Window requires Context Shift to be enabled. Reload the model with Context Shift enabled before using this overflow mode.",
+          },
+          { status: 409 },
+        ),
+      };
     }
 
     const promptBudget = resolvePromptTokenBudget(settings);
@@ -855,13 +918,15 @@ export class LlamaServerManager {
     }
 
     if (settings.overflowStrategy === "stop-at-limit") {
-      return Response.json(
-        {
-          error:
-            "The current conversation exceeds the active context budget. Shorten the chat, remove attachments, reduce the response length limit, or switch to Truncate Middle / Rolling Window.",
-        },
-        { status: 409 },
-      );
+      return {
+        errorResponse: Response.json(
+          {
+            error:
+              "The current conversation exceeds the active context budget. Shorten the chat, remove attachments, reduce the response length limit, or switch to Truncate Middle / Rolling Window.",
+          },
+          { status: 409 },
+        ),
+      };
     }
 
     const messageTokenContributions = requestMessages.map(
@@ -899,13 +964,15 @@ export class LlamaServerManager {
       }
     }
 
-    return Response.json(
-      {
-        error:
-          "The active context limit would still be exceeded after truncating middle messages. Reduce the prompt, attachments, or response length limit.",
-      },
-      { status: 409 },
-    );
+    return {
+      errorResponse: Response.json(
+        {
+          error:
+            "The active context limit would still be exceeded after truncating middle messages. Reduce the prompt, attachments, or response length limit.",
+        },
+        { status: 409 },
+      ),
+    };
   }
 
   /** Normalises a raw messages array into typed conversation message objects. */
@@ -1065,7 +1132,6 @@ export class LlamaServerManager {
         );
       }
 
-      let fileBuffer: Buffer;
       const replayAttachment: MediaAttachmentRecord = {
         byteSize: declaredByteSize ?? 0,
         fileName,
@@ -1094,8 +1160,13 @@ export class LlamaServerManager {
         continue;
       }
 
+      let replayDescriptor;
+
       try {
-        fileBuffer = await readFile(attachment.filePath);
+        replayDescriptor = await buildBinaryAttachmentReplayDescriptorFromFile(
+          replayAttachment,
+          attachment.filePath,
+        );
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : "Unknown file read error";
 
@@ -1110,7 +1181,7 @@ export class LlamaServerManager {
         );
       }
 
-      if (fileBuffer.byteLength > replayBudgetRemaining) {
+      if (replayDescriptor.byteSize > replayBudgetRemaining) {
         return Response.json(
           {
             error: `Replaying binary attachments for this request would exceed the media replay limit before ${fileName}. Remove some earlier media attachments or retry from a shorter branch.`,
@@ -1118,8 +1189,6 @@ export class LlamaServerManager {
           { status: 413 },
         );
       }
-
-      const replayDescriptor = buildBinaryAttachmentReplayDescriptor(replayAttachment, fileBuffer);
 
       replayBudgetRemaining -= replayDescriptor.byteSize;
       contentParts.push(createContentPartFromBinaryAttachmentReplayDescriptor(replayDescriptor));
@@ -1189,7 +1258,7 @@ export class LlamaServerManager {
 
               controller.enqueue(readResult.value);
               buffer += decoder.decode(readResult.value, { stream: true });
-              const parsedEvents = consumeSseEvents(buffer, { strict: true });
+              const parsedEvents = consumeSseEvents(buffer, { strict: false });
               buffer = parsedEvents.remainder;
 
               for (const eventPayload of parsedEvents.payloads) {
@@ -1207,7 +1276,16 @@ export class LlamaServerManager {
             }
 
             buffer += decoder.decode();
-            const finalEvents = flushSseEvents(buffer, { strict: true });
+            let finalEvents: unknown[] = [];
+
+            try {
+              finalEvents = flushSseEvents(buffer, { strict: false });
+            } catch (error) {
+              const errorMessage = error instanceof Error ? error.message : String(error);
+              this.debugLogService.serverLog(
+                `Ignored malformed final streamed SSE payload from ${endpoint}${chatId ? ` for chat ${chatId}` : ""}: ${errorMessage}`,
+              );
+            }
 
             for (const eventPayload of finalEvents) {
               payloadCount += 1;

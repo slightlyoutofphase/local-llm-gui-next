@@ -2,11 +2,13 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
-import { createServer } from "node:net";
+import http from "node:http";
+import { createConnection, createServer } from "node:net";
 import path from "node:path";
 import { AppDatabase } from "../../backend/db";
 import type { ApplicationPaths } from "../../backend/paths";
 import type { MediaAttachmentRecord } from "../../lib/contracts";
+import type { UploadMediaAttachmentsResponse } from "../../lib/api";
 import {
   createBackendTestScratchDir,
   removeBackendTestScratchDir,
@@ -64,6 +66,7 @@ describe("backend attachment staging", () => {
         }),
         headers: {
           "Content-Type": "application/json",
+          Origin: backendServer.baseUrl,
         },
         method: "POST",
       });
@@ -99,6 +102,91 @@ describe("backend attachment staging", () => {
       expect(lifecycleEntries[0]?.lastError).toBeNull();
 
       verificationDatabase.close();
+    },
+    { timeout: 30_000 },
+  );
+
+  test(
+    "routes multipart upload through explicit /api/media/upload route",
+    async () => {
+      userDataDir = await createBackendTestScratchDir("local-llm-gui-attachments");
+      const port = await allocatePort();
+      const backendServer = await startBackendServer(port, userDataDir);
+
+      serverProcess = backendServer.process;
+
+      const chatId = await createChat(backendServer.baseUrl, "Attachment route test");
+      const messageId = crypto.randomUUID();
+      const uploadPayload = await uploadFiles(backendServer.baseUrl, chatId, messageId, [
+        new File([createTinyPngBuffer()], "pixel.png", { type: "image/png" }),
+      ]);
+
+      expect(uploadPayload.attachments.length).toBe(1);
+      expect(uploadPayload.attachments[0]?.kind).toBe("image");
+      expect(uploadPayload.attachments[0]?.filePath).toContain(".pending");
+
+      await stopBackendTestProcess(backendServer.process);
+      serverProcess = null;
+    },
+    { timeout: 30_000 },
+  );
+
+  test(
+    "accepts chunked multipart uploads without a Content-Length header",
+    async () => {
+      userDataDir = await createBackendTestScratchDir("local-llm-gui-attachments");
+      const port = await allocatePort();
+      const backendServer = await startBackendServer(port, userDataDir);
+
+      serverProcess = backendServer.process;
+
+      const chatId = await createChat(backendServer.baseUrl, "Chunked upload test");
+      const messageId = crypto.randomUUID();
+      const boundary = "----local-llm-gui-test-boundary";
+      const fileBuffer = createTinyPngBuffer();
+
+      const requestBody = Buffer.concat([
+        Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="chatId"\r\n\r\n${chatId}\r\n`),
+        Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="messageId"\r\n\r\n${messageId}\r\n`),
+        Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="files"; filename="pixel.png"\r\nContent-Type: image/png\r\n\r\n`),
+        fileBuffer,
+        Buffer.from(`\r\n--${boundary}--\r\n`),
+      ]);
+
+      const response = await new Promise<{ statusCode: number; body: string }>((resolve, reject) => {
+        const request = http.request(
+          {
+            host: "127.0.0.1",
+            port,
+            path: "/api/media/upload",
+            method: "POST",
+            headers: {
+              Origin: backendServer.baseUrl,
+              "Content-Type": `multipart/form-data; boundary=${boundary}`,
+            },
+          },
+          (res) => {
+            let body = "";
+            res.setEncoding("utf8");
+            res.on("data", (chunk) => {
+              body += chunk;
+            });
+            res.on("end", () => {
+              resolve({ statusCode: res.statusCode ?? 0, body });
+            });
+          },
+        );
+
+        request.on("error", reject);
+        request.write(requestBody);
+        request.end();
+      });
+
+      expect(response.statusCode).toBe(201);
+      expect(response.body).toContain("\"attachments\"");
+
+      await stopBackendTestProcess(backendServer.process);
+      serverProcess = null;
     },
     { timeout: 30_000 },
   );
@@ -170,6 +258,7 @@ describe("backend attachment staging", () => {
         }),
         headers: {
           "Content-Type": "application/json",
+          Origin: backendServer.baseUrl,
         },
         method: "POST",
       });
@@ -203,10 +292,14 @@ describe("backend attachment staging", () => {
       expect(headResponse.status).toBe(200);
       expect(headResponse.headers.get("content-length")).toBe(String(finalizedAttachment.byteSize));
       expect(headResponse.headers.get("content-type")).toBe("image/png");
+      expect(headResponse.headers.get("cache-control")).toContain("max-age");
+      expect(headResponse.headers.get("accept-ranges")).toBe("bytes");
       expect(await headResponse.text()).toBe("");
 
       expect(getResponse.status).toBe(200);
       expect(getResponse.headers.get("content-type")).toBe("image/png");
+      expect(getResponse.headers.get("cache-control")).toContain("max-age");
+      expect(getResponse.headers.get("accept-ranges")).toBe("bytes");
       expect((await getResponse.arrayBuffer()).byteLength).toBe(finalizedAttachment.byteSize);
     },
     { timeout: 30_000 },
@@ -348,6 +441,7 @@ async function createChat(baseUrl: string, title: string): Promise<string> {
     body: JSON.stringify({ title }),
     headers: {
       "Content-Type": "application/json",
+      Origin: baseUrl,
     },
     method: "POST",
   });
@@ -365,13 +459,9 @@ async function uploadFiles(
   chatId: string,
   messageId: string,
   files: File[],
-): Promise<{
-  attachments: Array<{ filePath: string; id: string }>;
-}> {
+): Promise<UploadMediaAttachmentsResponse> {
   const response = await uploadFilesRaw(baseUrl, chatId, messageId, files);
-  const payload = (await response.json()) as {
-    attachments: Array<{ filePath: string; id: string }>;
-  };
+  const payload = (await response.json()) as UploadMediaAttachmentsResponse;
 
   expect(response.status).toBe(201);
 
@@ -386,6 +476,7 @@ async function appendMessage(baseUrl: string, chatId: string, content: string): 
     }),
     headers: {
       "Content-Type": "application/json",
+      Origin: baseUrl,
     },
     method: "POST",
   });
@@ -410,6 +501,9 @@ async function uploadFilesRaw(
 
   return await fetch(`${baseUrl}/api/media/upload`, {
     body: formData,
+    headers: {
+      Origin: baseUrl,
+    },
     method: "POST",
   });
 }

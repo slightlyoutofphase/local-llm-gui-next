@@ -815,7 +815,7 @@ async function consumeAssistantTurnStream(
     }
 
     buffer += decoder.decode(chunk.value, { stream: true });
-    const parsedEvents = consumeSseEvents<Record<string, unknown>>(buffer, { strict: true });
+    const parsedEvents = consumeSseEvents<Record<string, unknown>>(buffer, { strict: false });
     buffer = parsedEvents.remainder;
 
     for (const payload of parsedEvents.payloads) {
@@ -860,9 +860,15 @@ async function consumeAssistantTurnStream(
   }
 
   buffer += decoder.decode();
-  const finalEvents = consumeSseEvents<Record<string, unknown>>(buffer, { strict: true });
+  let finalEvents: Array<Record<string, unknown>> = [];
 
-  for (const payload of finalEvents.payloads) {
+  try {
+    finalEvents = consumeSseEvents<Record<string, unknown>>(buffer, { strict: false });
+  } catch {
+    // Ignore malformed final payloads and preserve the assistant turn as much as possible.
+  }
+
+  for (const payload of finalEvents) {
     const extractedDelta = extractAssistantDelta(payload);
     const parsedDelta = splitReasoningDelta(extractedDelta, reasoningParser);
 
