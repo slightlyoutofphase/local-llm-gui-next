@@ -1,0 +1,1 @@
+const sqlite = require("node:sqlite"); const db = new sqlite.Database("C:\\Users\\sudde\\AppData\\Roaming\\Local LLM GUI\\local-llm-gui.sqlite"); try { const tables = db.prepare("SELECT name FROM sqlite_master WHERE type=\"table\"").all(); console.log("Tables:", tables); } catch (e) { console.error(e); }
