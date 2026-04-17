@@ -242,6 +242,7 @@ export class AppDatabase {
    * Closes the underlying SQLite connection.
    */
   public close(): void {
+    this.isClosed = true;
     this.finalizeTrackedStatements();
     this.database.close(true);
   }
@@ -1755,6 +1756,8 @@ export class AppDatabase {
     `);
   }
 
+  private isClosed = false;
+
   /** Tracks cached Bun statements so SQLite can be hard-closed on Windows. */
   private installTrackedQueryHook(): void {
     const databaseWithMutableQuery = this.database as Database & {
@@ -1839,10 +1842,22 @@ export class AppDatabase {
   private async scheduleDeferredSchemaMaintenance(): Promise<void> {
     await Promise.resolve();
 
+    if (this.isClosed) {
+      return;
+    }
+
     try {
       this.ensureMessageAttachmentIndex();
       this.ensureSearchIndexVersion();
     } catch (error) {
+      if (
+        this.isClosed &&
+        error instanceof Error &&
+        error.message.includes("closed database")
+      ) {
+        return;
+      }
+
       console.error("Deferred database schema maintenance failed:", error);
     }
   }

@@ -6,7 +6,7 @@ const shouldOpenBrowser = process.env.LOCAL_LLM_GUI_DISABLE_BROWSER !== "1";
 
 const backendProcess = spawn(
   process.execPath,
-  ["--watch", "--inspect=3030", "src/backend/server.ts", `--port=${backendPort}`, "--dev-proxy"],
+  ["--watch", "src/backend/server.ts", `--port=${backendPort}`, "--dev-proxy"],
   {
     cwd: process.cwd(),
     env: {

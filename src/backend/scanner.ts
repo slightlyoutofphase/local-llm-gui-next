@@ -54,7 +54,7 @@ export class ModelScanner {
    * @param debugLogService Optional debug log service for reporting scan errors.
    */
   public constructor(
-    _database: AppDatabase,
+    private readonly database: AppDatabase,
     private readonly debugLogService?: DebugLogService,
     dependencies: ModelScannerDependencies = {},
   ) {
@@ -120,6 +120,17 @@ export class ModelScanner {
       const sortedModels = discoveredModels.sort((leftModel, rightModel) =>
         leftModel.id.localeCompare(rightModel.id, undefined, { sensitivity: "base" }),
       );
+
+      for (const model of sortedModels) {
+        try {
+          this.database.ensureDefaultPresets(model);
+        } catch (error: unknown) {
+          const errorMessage = error instanceof Error ? error.message : "Unknown default preset error";
+          this.debugLogService?.serverLog(
+            `Failed to ensure default presets for ${model.id}: ${errorMessage}`,
+          );
+        }
+      }
 
       this.scanCache = {
         manifestKey,
