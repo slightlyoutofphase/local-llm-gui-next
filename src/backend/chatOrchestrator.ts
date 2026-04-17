@@ -4,7 +4,7 @@ import { ChatNotFoundError, type AppDatabase } from "./db";
 import type { DebugLogService } from "./debug";
 import type { LlamaServerManager } from "./llamaServer";
 import { ReasoningParser } from "./reasoningParser";
-import { consumeSseEvents } from "./sseParsing";
+import { consumeSseEvents, flushSseEvents } from "./sseParsing";
 import type { LocalToolRegistry } from "./tools/registry";
 import type { ToolManifest, ToolResult } from "./tools/types";
 
@@ -863,7 +863,7 @@ async function consumeAssistantTurnStream(
   let finalEvents: Array<Record<string, unknown>> = [];
 
   try {
-    finalEvents = consumeSseEvents<Record<string, unknown>>(buffer, { strict: false });
+    finalEvents = flushSseEvents<Record<string, unknown>>(buffer, { strict: false });
   } catch {
     // Ignore malformed final payloads and preserve the assistant turn as much as possible.
   }

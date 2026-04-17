@@ -187,15 +187,9 @@ export async function rollbackPromotedPendingAttachments(
   }
 }
 
-async function filesHaveIdenticalContents(
-  firstPath: string,
-  secondPath: string,
-): Promise<boolean> {
+async function filesHaveIdenticalContents(firstPath: string, secondPath: string): Promise<boolean> {
   try {
-    const [firstData, secondData] = await Promise.all([
-      readFile(firstPath),
-      readFile(secondPath),
-    ]);
+    const [firstData, secondData] = await Promise.all([readFile(firstPath), readFile(secondPath)]);
 
     return firstData.length === secondData.length && firstData.equals(secondData);
   } catch {

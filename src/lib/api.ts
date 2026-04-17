@@ -1007,10 +1007,11 @@ export function isRetryableRequestError(error: unknown): boolean {
   }
 
   const normalizedMessage = error.message.toLowerCase();
-  const normalizedCode =
-    typeof (error as { code?: unknown }).code === "string"
-      ? (error as { code?: string }).code.toLowerCase()
-      : "";
+  const normalizedCode = (() => {
+    const rawCode = (error as { code?: unknown }).code;
+
+    return typeof rawCode === "string" ? rawCode.toLowerCase() : "";
+  })();
   const retryableErrorCodes = new Set([
     "econnreset",
     "econnrefused",

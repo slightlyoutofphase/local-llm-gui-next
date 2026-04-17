@@ -1335,13 +1335,14 @@ async function runAssistantStream(options: {
         activeChatId: state.activeChatId,
         activeGenerationChatId: state.activeGenerationChatId,
         chatId,
-        messages: hasPartialOutput && persistedAssistantMessage
-          ? replaceStreamingMessage(
-              state.messagesByChatId[chatId] ?? [],
-              streamingMessage.id,
-              persistedAssistantMessage,
-            )
-          : removeStreamingMessage(state.messagesByChatId[chatId] ?? [], streamingMessage.id),
+        messages:
+          hasPartialOutput && persistedAssistantMessage
+            ? replaceStreamingMessage(
+                state.messagesByChatId[chatId] ?? [],
+                streamingMessage.id,
+                persistedAssistantMessage,
+              )
+            : removeStreamingMessage(state.messagesByChatId[chatId] ?? [], streamingMessage.id),
         messagesByChatId: state.messagesByChatId,
       }),
       sending: false,

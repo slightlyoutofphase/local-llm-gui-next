@@ -114,7 +114,12 @@ describe("subscribeToJsonSse", () => {
     });
 
     fakeEventSource.emit("runtime", new MessageEvent("runtime", { data: "{not-json" }));
-    fakeEventSource.emit("runtime", new MessageEvent("runtime", { data: JSON.stringify({ payload: { ok: true }, timestamp: "1", type: "runtime" }) }));
+    fakeEventSource.emit(
+      "runtime",
+      new MessageEvent("runtime", {
+        data: JSON.stringify({ payload: { ok: true }, timestamp: "1", type: "runtime" }),
+      }),
+    );
     disconnect();
 
     expect(errorKinds).toEqual(["transient"]);
@@ -171,7 +176,12 @@ describe("subscribeToJsonSse", () => {
     });
 
     createdSources[0]?.emit("runtime", new MessageEvent("runtime", { data: "{not-json" }));
-    createdSources[0]?.emit("runtime", new MessageEvent("runtime", { data: JSON.stringify({ payload: { ok: true }, timestamp: "1", type: "runtime" }) }));
+    createdSources[0]?.emit(
+      "runtime",
+      new MessageEvent("runtime", {
+        data: JSON.stringify({ payload: { ok: true }, timestamp: "1", type: "runtime" }),
+      }),
+    );
     await new Promise<void>((resolve) => {
       setTimeout(resolve, 10);
     });

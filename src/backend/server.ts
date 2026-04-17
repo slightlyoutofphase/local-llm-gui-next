@@ -1768,7 +1768,9 @@ function wrapForegroundGenerationResponse(response: Response, complete: () => vo
 
   const createReader = (): ReadableStreamDefaultReader<Uint8Array> => {
     try {
-      return response.body!.getReader();
+      return (
+        response.body as ReadableStream<Uint8Array>
+      ).getReader() as unknown as ReadableStreamDefaultReader<Uint8Array>;
     } catch (error) {
       finalize();
       throw error;
@@ -2044,9 +2046,7 @@ function renderSingleChatMarkdown(
 const MAX_JSON_BODY_BYTES = (() => {
   const envValue = Number(process.env["LOCAL_LLM_GUI_MAX_JSON_BODY_BYTES"] ?? "");
 
-  return Number.isFinite(envValue) && envValue > 0
-    ? envValue
-    : 10 * 1024 * 1024;
+  return Number.isFinite(envValue) && envValue > 0 ? envValue : 10 * 1024 * 1024;
 })();
 const MAX_MULTIPART_BODY_BYTES = 50 * 1024 * 1024;
 
@@ -2248,7 +2248,10 @@ async function readMultipartFormData(request: Request): Promise<RequestFormData>
   }
 }
 
-async function writeFileStream(targetFilePath: string, stream: ReadableStream<Uint8Array>): Promise<void> {
+async function writeFileStream(
+  targetFilePath: string,
+  stream: ReadableStream<Uint8Array>,
+): Promise<void> {
   const fileHandle = await open(targetFilePath, "w");
 
   try {

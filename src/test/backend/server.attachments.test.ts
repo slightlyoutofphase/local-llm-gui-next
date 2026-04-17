@@ -3,7 +3,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import http from "node:http";
-import { createConnection, createServer } from "node:net";
+import { createServer } from "node:net";
 import path from "node:path";
 import { AppDatabase } from "../../backend/db";
 import type { ApplicationPaths } from "../../backend/paths";
@@ -146,44 +146,52 @@ describe("backend attachment staging", () => {
       const fileBuffer = createTinyPngBuffer();
 
       const requestBody = Buffer.concat([
-        Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="chatId"\r\n\r\n${chatId}\r\n`),
-        Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="messageId"\r\n\r\n${messageId}\r\n`),
-        Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="files"; filename="pixel.png"\r\nContent-Type: image/png\r\n\r\n`),
+        Buffer.from(
+          `--${boundary}\r\nContent-Disposition: form-data; name="chatId"\r\n\r\n${chatId}\r\n`,
+        ),
+        Buffer.from(
+          `--${boundary}\r\nContent-Disposition: form-data; name="messageId"\r\n\r\n${messageId}\r\n`,
+        ),
+        Buffer.from(
+          `--${boundary}\r\nContent-Disposition: form-data; name="files"; filename="pixel.png"\r\nContent-Type: image/png\r\n\r\n`,
+        ),
         fileBuffer,
         Buffer.from(`\r\n--${boundary}--\r\n`),
       ]);
 
-      const response = await new Promise<{ statusCode: number; body: string }>((resolve, reject) => {
-        const request = http.request(
-          {
-            host: "127.0.0.1",
-            port,
-            path: "/api/media/upload",
-            method: "POST",
-            headers: {
-              Origin: backendServer.baseUrl,
-              "Content-Type": `multipart/form-data; boundary=${boundary}`,
+      const response = await new Promise<{ statusCode: number; body: string }>(
+        (resolve, reject) => {
+          const request = http.request(
+            {
+              host: "127.0.0.1",
+              port,
+              path: "/api/media/upload",
+              method: "POST",
+              headers: {
+                Origin: backendServer.baseUrl,
+                "Content-Type": `multipart/form-data; boundary=${boundary}`,
+              },
             },
-          },
-          (res) => {
-            let body = "";
-            res.setEncoding("utf8");
-            res.on("data", (chunk) => {
-              body += chunk;
-            });
-            res.on("end", () => {
-              resolve({ statusCode: res.statusCode ?? 0, body });
-            });
-          },
-        );
+            (res) => {
+              let body = "";
+              res.setEncoding("utf8");
+              res.on("data", (chunk) => {
+                body += chunk;
+              });
+              res.on("end", () => {
+                resolve({ statusCode: res.statusCode ?? 0, body });
+              });
+            },
+          );
 
-        request.on("error", reject);
-        request.write(requestBody);
-        request.end();
-      });
+          request.on("error", reject);
+          request.write(requestBody);
+          request.end();
+        },
+      );
 
       expect(response.statusCode).toBe(201);
-      expect(response.body).toContain("\"attachments\"");
+      expect(response.body).toContain('"attachments"');
 
       await stopBackendTestProcess(backendServer.process);
       serverProcess = null;

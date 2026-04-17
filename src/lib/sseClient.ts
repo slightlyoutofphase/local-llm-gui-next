@@ -1,5 +1,4 @@
 const INVALID_SSE_EVENT_PAYLOAD_MESSAGE = "The backend returned an invalid SSE event payload.";
-const INVALID_SSE_JSON_PAYLOAD_MESSAGE = "The backend returned an invalid SSE JSON payload.";
 const OVERSIZED_SSE_REMAINDER_MESSAGE =
   "The backend returned an oversized or unterminated SSE payload.";
 const MAX_JSON_SSE_REMAINDER_CHARS = 256_000;
