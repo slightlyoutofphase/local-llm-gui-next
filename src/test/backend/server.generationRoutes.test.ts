@@ -41,6 +41,7 @@ describe("backend fetch-handled generation routes", () => {
         }),
         headers: {
           "Content-Type": "application/json",
+          Origin: backendServer.baseUrl,
         },
         method: "POST",
       });
@@ -69,6 +70,7 @@ describe("backend fetch-handled generation routes", () => {
         }),
         headers: {
           "Content-Type": "application/json",
+          Origin: backendServer.baseUrl,
         },
         method: "POST",
       });
@@ -97,6 +99,7 @@ describe("backend fetch-handled generation routes", () => {
         }),
         headers: {
           "Content-Type": "application/json",
+          Origin: backendServer.baseUrl,
         },
         method: "POST",
       });

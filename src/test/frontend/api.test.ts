@@ -10,6 +10,10 @@ import {
   requestJson,
   subscribeToJsonSse,
 } from "../../lib/api";
+
+type AbortSignalConstructorAnyOverride = {
+  any?: unknown;
+};
 import { calculateRuntimeLoadTimeoutMs } from "../../lib/runtimeLoad";
 
 const originalEventSource = globalThis.EventSource;
@@ -77,7 +81,8 @@ test("subscribeToJsonSse forwards EventSource errors to the optional callback", 
 test("requestJson attaches a timeout-backed abort signal to JSON requests", async () => {
   let capturedSignal: AbortSignal | null = null;
 
-  globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    void input;
     capturedSignal = (init?.signal as AbortSignal | null | undefined) ?? null;
 
     return Response.json({ chats: [], dbRevision: 0 });
@@ -91,7 +96,9 @@ test("requestJson attaches a timeout-backed abort signal to JSON requests", asyn
 
 test("requestJson retries POST requests with an explicit idempotency header", async () => {
   let attempt = 0;
-  globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    void input;
+    void init;
     attempt += 1;
 
     if (attempt === 1) {
@@ -240,8 +247,12 @@ test("isRetryableRequestError returns true for common retryable network conditio
   expect(isRetryableRequestError(new Error("Failed to fetch"))).toBe(true);
   expect(isRetryableRequestError(new Error("Connection reset by peer"))).toBe(true);
 
-  const codeError = new Error("socket hang up");
-  (codeError as any).code = "ECONNRESET";
+  interface ErrorWithCode extends Error {
+    code?: string;
+  }
+
+  const codeError = new Error("socket hang up") as ErrorWithCode;
+  codeError.code = "ECONNRESET";
 
   expect(isRetryableRequestError(codeError)).toBe(true);
 });
@@ -255,13 +266,14 @@ test("isRetryableRequestError returns false for AbortError instances", () => {
 
 test("buildTimedRequestSignal fallback combines timeout and existing signal when AbortSignal.any is unavailable", async () => {
   const descriptor = Object.getOwnPropertyDescriptor(AbortSignal, "any");
+  const abortSignalConstructor = AbortSignal as unknown as AbortSignalConstructorAnyOverride;
 
   if (descriptor && descriptor.configurable !== true) {
     expect(true).toBe(true);
     return;
   }
 
-  const originalAny = (AbortSignal as any).any;
+  const originalAny = abortSignalConstructor.any;
 
   Object.defineProperty(AbortSignal, "any", {
     value: undefined,
@@ -282,21 +294,22 @@ test("buildTimedRequestSignal fallback combines timeout and existing signal when
     if (descriptor) {
       Object.defineProperty(AbortSignal, "any", descriptor);
     } else {
-      delete (AbortSignal as any).any;
+      delete abortSignalConstructor.any;
     }
-    (AbortSignal as any).any = originalAny;
+    abortSignalConstructor.any = originalAny;
   }
 });
 
 test("buildTimedRequestSignal cleanup cancels the fallback timeout when an existing signal is provided", async () => {
   const descriptor = Object.getOwnPropertyDescriptor(AbortSignal, "any");
+  const abortSignalConstructor = AbortSignal as unknown as AbortSignalConstructorAnyOverride;
 
   if (descriptor && descriptor.configurable !== true) {
     expect(true).toBe(true);
     return;
   }
 
-  const originalAny = (AbortSignal as any).any;
+  const originalAny = abortSignalConstructor.any;
 
   Object.defineProperty(AbortSignal, "any", {
     value: undefined,
@@ -326,13 +339,17 @@ test("buildTimedRequestSignal cleanup cancels the fallback timeout when an exist
     if (descriptor) {
       Object.defineProperty(AbortSignal, "any", descriptor);
     } else {
-      delete (AbortSignal as any).any;
+      delete abortSignalConstructor.any;
     }
-    (AbortSignal as any).any = originalAny;
+    abortSignalConstructor.any = originalAny;
   }
 });
 
 test("buildTimedRequestSignal cleanup cancels the fallback timeout when AbortSignal.timeout is unavailable", async () => {
+  type AbortSignalConstructorTimeoutOverride = {
+    timeout?: typeof AbortSignal.timeout;
+  };
+  const abortSignalConstructor = AbortSignal as unknown as AbortSignalConstructorTimeoutOverride;
   const timeoutDescriptor = Object.getOwnPropertyDescriptor(AbortSignal, "timeout");
 
   if (!timeoutDescriptor?.configurable) {
@@ -360,6 +377,6 @@ test("buildTimedRequestSignal cleanup cancels the fallback timeout when AbortSig
     if (timeoutDescriptor) {
       Object.defineProperty(AbortSignal, "timeout", timeoutDescriptor);
     }
-    (AbortSignal as any).timeout = originalTimeout;
+    abortSignalConstructor.timeout = originalTimeout;
   }
 });

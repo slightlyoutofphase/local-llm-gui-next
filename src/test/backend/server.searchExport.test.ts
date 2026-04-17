@@ -346,6 +346,7 @@ async function createChat(baseUrl: string, title: string): Promise<string> {
     body: JSON.stringify({ title }),
     headers: {
       "Content-Type": "application/json",
+      Origin: baseUrl,
     },
     method: "POST",
   });
@@ -373,6 +374,7 @@ async function appendMessage(
     }),
     headers: {
       "Content-Type": "application/json",
+      Origin: baseUrl,
     },
     method: "POST",
   });
@@ -390,6 +392,7 @@ async function renameChat(baseUrl: string, chatId: string, title: string): Promi
     body: JSON.stringify({ title }),
     headers: {
       "Content-Type": "application/json",
+      Origin: baseUrl,
     },
     method: "PUT",
   });
@@ -407,6 +410,7 @@ async function editMessage(
     body: JSON.stringify({ content, messageId }),
     headers: {
       "Content-Type": "application/json",
+      Origin: baseUrl,
     },
     method: "POST",
   });
@@ -417,6 +421,9 @@ async function editMessage(
 async function deleteChat(baseUrl: string, chatId: string): Promise<void> {
   const response = await fetch(`${baseUrl}/api/chats/${chatId}`, {
     method: "DELETE",
+    headers: {
+      Origin: baseUrl,
+    },
   });
 
   expect(response.status).toBe(200);

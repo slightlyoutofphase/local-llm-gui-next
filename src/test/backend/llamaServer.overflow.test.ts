@@ -99,7 +99,17 @@ describe.serial("LlamaServerManager overflow handling", () => {
     Reflect.set(manager, "activeRequestPriority", "foreground");
     Reflect.set(manager, "activeRequestChatId", "chat-1");
 
-    const response = await (manager as any).proxyJsonRequest(
+    type ProxyJsonRequestHelper = {
+      proxyJsonRequest(
+        endpoint: string,
+        requestBody: Record<string, unknown>,
+        downstreamSignal: AbortSignal,
+        requestPriority: "background" | "foreground",
+        chatId: string | null,
+      ): Promise<Response>;
+    };
+
+    const response = await (manager as unknown as ProxyJsonRequestHelper).proxyJsonRequest(
       "/completion",
       { prompt: "hello" },
       new AbortController().signal,

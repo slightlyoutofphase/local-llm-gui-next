@@ -1344,14 +1344,14 @@ async function startServer(): Promise<void> {
         },
       },
       "/api/media/upload": {
-        POST: async (request: RouteRequest<{}>, server) => {
+        POST: async (request: RouteRequest<Record<string, string>>, server) => {
           server.timeout(request, 0);
 
           return await handleMediaUpload(request);
         },
       },
       "/api/media/pending": {
-        DELETE: async (request: RouteRequest<{}>) => {
+        DELETE: async (request: RouteRequest<Record<string, string>>) => {
           const body = await readJsonObject(request);
           const chatIdValue = body["chatId"];
           const messageIdValue = body["messageId"];

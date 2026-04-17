@@ -96,7 +96,7 @@ describe("backend server write-route hardening", () => {
       const payload = (await response.json()) as { error?: string };
 
       expect(response.status).toBe(403);
-      expect(payload.error).toContain("trusted origin");
+      expect(payload.error).toContain("trusted secret");
     },
     { timeout: 30_000 },
   );

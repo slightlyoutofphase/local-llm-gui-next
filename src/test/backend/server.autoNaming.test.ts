@@ -53,6 +53,9 @@ describe("backend auto-naming diagnostics", () => {
 
       const response = await fetch(`${backendServer.baseUrl}/api/chats/${chat.id}/auto-name`, {
         method: "POST",
+        headers: {
+          Origin: backendServer.baseUrl,
+        },
       });
       const payload = (await response.json()) as {
         canceled: boolean;

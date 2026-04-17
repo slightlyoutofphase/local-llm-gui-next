@@ -1,4 +1,6 @@
 import { expect, test } from "bun:test";
+import type { ChatStoreState } from "../../store/chatStore";
+import type { ChatDetailResponse } from "../../lib/api";
 import {
   preserveDraftsWhenSwitchingChats,
   refreshChatIfMessageMissing,
@@ -45,7 +47,7 @@ test("shouldApplyLoadedChatResponse rejects responses for chats that are no long
 });
 
 test("refreshChatIfMessageMissing returns true when the target message is already present", async () => {
-  const state = {
+  const state: ChatStoreState = {
     activeChatId: "chat-1",
     activeGenerationChatId: null,
     chats: [],
@@ -69,8 +71,10 @@ test("refreshChatIfMessageMissing returns true when the target message is alread
     },
   } as const;
 
-  const getState = () => state as any;
-  const setState = (patch: any) => {
+  type ChatStoreStatePatch = Partial<ChatStoreState> | ((state: ChatStoreState) => Partial<ChatStoreState>);
+
+  const getState = (): ChatStoreState => state as ChatStoreState;
+  const setState = (patch: ChatStoreStatePatch) => {
     if (typeof patch === "function") {
       Object.assign(state, patch(state));
     } else {
@@ -115,8 +119,10 @@ test("refreshChatIfMessageMissing fetches chat history when the target message i
     messagesByChatId: {},
   };
 
-  const getState = () => state as any;
-  const setState = (patch: any) => {
+  type ChatStoreStatePatch = Partial<ChatStoreState> | ((state: ChatStoreState) => Partial<ChatStoreState>);
+
+  const getState = (): ChatStoreState => state as ChatStoreState;
+  const setState = (patch: ChatStoreStatePatch) => {
     if (typeof patch === "function") {
       Object.assign(state, patch(state));
     } else {
@@ -124,7 +130,7 @@ test("refreshChatIfMessageMissing fetches chat history when the target message i
     }
   };
 
-  const chatResponse = {
+  const chatResponse: ChatDetailResponse = {
     chat: {
       id: "chat-1",
       title: "Test chat",
@@ -148,7 +154,7 @@ test("refreshChatIfMessageMissing fetches chat history when the target message i
     ],
   };
 
-  const fetchChatFn = async () => chatResponse as any;
+  const fetchChatFn = async (): Promise<ChatDetailResponse> => chatResponse;
 
   expect(
     await refreshChatIfMessageMissing("chat-1", "msg-2", getState, setState, fetchChatFn),
