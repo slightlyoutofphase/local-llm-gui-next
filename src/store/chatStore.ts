@@ -1229,7 +1229,7 @@ async function runAssistantStream(options: {
     );
 
     // Flush any pending coalesced update before finalizing.
-    if (streamingUpdateScheduled) {
+    if (streamingUpdateTimer !== null) {
       flushStreamingUpdate();
     }
 
@@ -1451,7 +1451,10 @@ async function synchronizeChatStoreFromUiCache(
       }
 
       if (currentState.chats.length > 0) {
-        await getState().selectChat(currentState.chats[0].id);
+        const firstChat = currentState.chats[0];
+        if (firstChat) {
+          await getState().selectChat(firstChat.id);
+        }
       }
 
       return;
