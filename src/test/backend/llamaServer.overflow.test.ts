@@ -106,7 +106,11 @@ describe.serial("LlamaServerManager overflow handling", () => {
       "background",
       null,
     );
-    const payload = (await response.json()) as { activeChatId?: string; error?: string; retryable?: boolean };
+    const payload = (await response.json()) as {
+      activeChatId?: string;
+      error?: string;
+      retryable?: boolean;
+    };
 
     expect(response.status).toBe(409);
     expect(payload.activeChatId).toBe("chat-1");

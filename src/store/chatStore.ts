@@ -1442,10 +1442,7 @@ async function synchronizeChatStoreFromUiCache(
       currentState.chats.some((chat) => chat.id === currentState.activeChatId);
 
     if (!activeChatStillKnown) {
-      if (
-        uiCache.lastChatId &&
-        currentState.chats.some((chat) => chat.id === uiCache.lastChatId)
-      ) {
+      if (uiCache.lastChatId && currentState.chats.some((chat) => chat.id === uiCache.lastChatId)) {
         await getState().selectChat(uiCache.lastChatId);
         return;
       }

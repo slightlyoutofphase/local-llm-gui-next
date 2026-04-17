@@ -1850,11 +1850,7 @@ export class AppDatabase {
       this.ensureMessageAttachmentIndex();
       this.ensureSearchIndexVersion();
     } catch (error) {
-      if (
-        this.isClosed &&
-        error instanceof Error &&
-        error.message.includes("closed database")
-      ) {
+      if (this.isClosed && error instanceof Error && error.message.includes("closed database")) {
         return;
       }
 

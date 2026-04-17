@@ -125,7 +125,8 @@ export class ModelScanner {
         try {
           this.database.ensureDefaultPresets(model);
         } catch (error: unknown) {
-          const errorMessage = error instanceof Error ? error.message : "Unknown default preset error";
+          const errorMessage =
+            error instanceof Error ? error.message : "Unknown default preset error";
           this.debugLogService?.serverLog(
             `Failed to ensure default presets for ${model.id}: ${errorMessage}`,
           );

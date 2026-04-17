@@ -883,8 +883,15 @@ export function subscribeToJsonSse<TPayload>(
 }
 
 /** Issues a JSON request and returns the parsed response, throwing on non-OK status. */
-export async function requestJson<TPayload>(input: string, init?: TimedRequestInit): Promise<TPayload> {
-  const { timeoutMs = JSON_REQUEST_TIMEOUT_MS, retryOnIdempotentRequest, ...fetchInit } = init ?? {};
+export async function requestJson<TPayload>(
+  input: string,
+  init?: TimedRequestInit,
+): Promise<TPayload> {
+  const {
+    timeoutMs = JSON_REQUEST_TIMEOUT_MS,
+    retryOnIdempotentRequest,
+    ...fetchInit
+  } = init ?? {};
   const headers = new Headers(fetchInit.headers);
   const isIdempotent = !fetchInit.method || fetchInit.method.toUpperCase() === "GET";
   const hasExplicitIdempotencyHeader =
