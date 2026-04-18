@@ -638,55 +638,51 @@ export const useModelStore = create<ModelStoreState>((set, get) => ({
         let currentUpdate = update;
         let attempt = 0;
 
-        try {
-          while (attempt < 3) {
-            attempt += 1;
-            const configResponse = await updateConfig(currentUpdate, get().config?.configRevision);
+        while (attempt < 3) {
+          attempt += 1;
+          const configResponse = await updateConfig(currentUpdate, get().config?.configRevision);
 
-            if (configResponse.error) {
-              set({ config: configResponse.config });
+          if (configResponse.error) {
+            set({ config: configResponse.config });
 
-              currentUpdate = {
-                ...currentUpdate,
-                customBinaries:
-                  currentUpdate.customBinaries ?? configResponse.config.customBinaries,
-                debug: {
-                  ...configResponse.config.debug,
-                  ...currentUpdate.debug,
-                },
-              };
+            currentUpdate = {
+              ...currentUpdate,
+              customBinaries: currentUpdate.customBinaries ?? configResponse.config.customBinaries,
+              debug: {
+                ...configResponse.config.debug,
+                ...currentUpdate.debug,
+              },
+            };
 
-              continue;
-            }
-
-            set({
-              config: configResponse.config,
-              error: configResponse.warning ?? null,
-            });
-
-            if (typeof update.modelsPath === "string") {
-              await get().refreshModels();
-            }
-
-            if (update.toolEnabledStates) {
-              await get().refreshTools();
-            }
-
-            break;
+            continue;
           }
 
-          if (attempt >= 3) {
-            throw new Error("Failed to save configuration after multiple concurrent updates.");
+          set({
+            config: configResponse.config,
+            error: configResponse.warning ?? null,
+          });
+
+          if (typeof update.modelsPath === "string") {
+            await get().refreshModels();
           }
-        } finally {
-          set({ savingConfig: configSaveQueue.hasPendingTasks() });
+
+          if (update.toolEnabledStates) {
+            await get().refreshTools();
+          }
+
+          break;
+        }
+
+        if (attempt >= 3) {
+          throw new Error("Failed to save configuration after multiple concurrent updates.");
         }
       });
     } catch (error) {
       set({
         error: error instanceof Error ? error.message : "Failed to save configuration.",
-        savingConfig: configSaveQueue.hasPendingTasks(),
       });
+    } finally {
+      set({ savingConfig: configSaveQueue.hasPendingTasks() });
     }
   },
   openToolsFolder: async () => {

@@ -72,7 +72,7 @@ interface TrackedAttachmentCleanupOptions {
   markCleanupJobQueued: (jobId: string, errorMessage: string) => Promise<void>;
   markCleanupJobRunning: (jobId: string) => Promise<void>;
   maxAttempts: number;
-  onFinalFailure?: (errorMessage: string) => void;
+  onFinalFailure?: (errorMessage: string) => void | Promise<void>;
   onFinalFailureDescription?: string;
   operation: "append" | "edit" | "regenerate";
   performCleanup: () => Promise<void>;
@@ -366,7 +366,7 @@ async function runTrackedAttachmentCleanup(
       if (isFinalAttempt) {
         if (options.onFinalFailure) {
           try {
-            options.onFinalFailure(errorMessage);
+            await options.onFinalFailure(errorMessage);
           } catch (stateError) {
             options.log(
               `Failed to update ${options.onFinalFailureDescription ?? "attachment cleanup state"}: ${formatAttachmentCleanupError(stateError)}`,

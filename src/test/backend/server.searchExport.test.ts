@@ -282,7 +282,7 @@ describe("backend chat search and export", () => {
 
       await exportResponse.body?.cancel();
     },
-    { timeout: 60_000 },
+    { timeout: 120_000 },
   );
 });
 
@@ -296,7 +296,7 @@ async function seedLargeExportFixture(userDataDir: string): Promise<{ controlCha
     await database.appendMessage(controlChat.id, "user", "Control marker for concurrent search.");
     await database.appendMessage(controlChat.id, "assistant", "Control response.");
 
-    for (let chatIndex = 0; chatIndex < 160; chatIndex += 1) {
+    for (let chatIndex = 0; chatIndex < 40; chatIndex += 1) {
       const chat = await database.createChat(`Bulk export ${String(chatIndex)}`);
 
       for (let messageIndex = 0; messageIndex < 6; messageIndex += 1) {

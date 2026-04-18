@@ -67,10 +67,21 @@ describe("backend server integration", () => {
         body: JSON.stringify({ modelId: TARGET_MODEL_ID }),
         headers: {
           "Content-Type": "application/json",
+          Origin: FRONTEND_ORIGIN,
         },
         method: "POST",
+      }).then(async (res) => {
+        if (!res.ok) {
+          const text = await res.text();
+          throw new Error(`Load failed with ${res.status}: ${text}`);
+        }
+        return res;
       });
-      const polledSnapshots = await pollRuntimeSnapshotsUntilReady(backendServer.baseUrl);
+
+      const polledSnapshots = await Promise.race([
+        pollRuntimeSnapshotsUntilReady(backendServer.baseUrl),
+        loadResponsePromise.then(() => new Promise<never>(() => {})), // Never resolves if ok, throws if not
+      ]);
       const loadResponse = await loadResponsePromise;
       const runtimeEvents = await runtimeEventsPromise;
 
@@ -102,6 +113,9 @@ describe("backend server integration", () => {
       expect(finalEventSnapshot?.loadProgress).toBe(100);
 
       const unloadResponse = await fetch(`${backendServer.baseUrl}/api/models/unload`, {
+        headers: {
+          Origin: FRONTEND_ORIGIN,
+        },
         method: "POST",
       });
 
