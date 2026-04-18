@@ -384,7 +384,7 @@ describe("backend attachment staging", () => {
       ]);
 
       const seedDatabase = new AppDatabase(applicationPaths);
-      const chat = seedDatabase.createChat("Stale pending upload");
+      const chat = await seedDatabase.createChat("Stale pending upload");
       const messageId = crypto.randomUUID();
       const staleAttachment: MediaAttachmentRecord = {
         byteSize: createTinyPngBuffer().byteLength,
@@ -406,7 +406,7 @@ describe("backend attachment staging", () => {
       await mkdir(strayPendingDirectory, { recursive: true });
       await writeFile(staleAttachment.filePath, createTinyPngBuffer());
       await writeFile(strayPendingFilePath, createTinyPngBuffer());
-      seedDatabase.createPendingAttachment(chat.id, messageId, staleAttachment);
+      await seedDatabase.createPendingAttachment(chat.id, messageId, staleAttachment);
       seedDatabase.close();
 
       const port = await allocatePort();

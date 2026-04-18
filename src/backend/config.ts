@@ -18,6 +18,13 @@ interface AppConfigUpdate {
   debug?: Partial<DebugLogSettings>;
 }
 
+export class ConcurrentConfigUpdateError extends Error {
+  public constructor(public readonly currentConfig: AppConfig) {
+    super("Configuration was modified by another request since it was last read.");
+    this.name = "ConcurrentConfigUpdateError";
+  }
+}
+
 const DEFAULT_DEBUG_SETTINGS: DebugLogSettings = {
   enabled: true,
   showProcessStdout: true,
@@ -85,14 +92,29 @@ export class ConfigStore {
    * Merges a partial update into the persisted configuration.
    *
    * @param update Partial configuration updates.
+   * @param expectedRevision Optional expected revision for OCC.
    * @returns The updated persisted configuration.
+   * @throws {ConcurrentConfigUpdateError} When the expected revision mismatches.
    */
-  public async updateConfig(update: AppConfigUpdate): Promise<AppConfig> {
+  public async updateConfig(
+    update: AppConfigUpdate,
+    expectedRevision?: number,
+  ): Promise<AppConfig> {
     const currentConfig = await this.getConfig();
+
+    if (
+      typeof expectedRevision === "number" &&
+      typeof currentConfig.configRevision === "number" &&
+      currentConfig.configRevision !== expectedRevision
+    ) {
+      throw new ConcurrentConfigUpdateError(currentConfig);
+    }
+
     const nextConfig = sanitizeConfig(
       {
         ...currentConfig,
         ...update,
+        configRevision: (currentConfig.configRevision ?? 1) + 1,
         customBinaries: update.customBinaries ?? currentConfig.customBinaries,
         debug: {
           ...currentConfig.debug,
@@ -127,6 +149,7 @@ function createDefaultConfig(applicationPaths: ApplicationPaths): AppConfig {
     autoNamingEnabled: true,
     toolEnabledStates: {},
     debug: DEFAULT_DEBUG_SETTINGS,
+    configRevision: 1,
   };
 }
 

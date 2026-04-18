@@ -252,7 +252,7 @@ describe("backend chat search and export", () => {
     async () => {
       userDataDir = await createBackendTestScratchDir("local-llm-gui-search-export");
 
-      const { controlChatId } = seedLargeExportFixture(userDataDir);
+      const { controlChatId } = await seedLargeExportFixture(userDataDir);
       const port = await allocatePort();
       const backendServer = await startBackendServer(port, userDataDir);
 
@@ -286,21 +286,21 @@ describe("backend chat search and export", () => {
   );
 });
 
-function seedLargeExportFixture(userDataDir: string): { controlChatId: string } {
+async function seedLargeExportFixture(userDataDir: string): Promise<{ controlChatId: string }> {
   const database = new AppDatabase(createApplicationPaths(userDataDir));
   const largeTranscriptContent = "Large export transcript ".repeat(2_048);
 
   try {
-    const controlChat = database.createChat("Concurrent search control");
+    const controlChat = await database.createChat("Concurrent search control");
 
-    database.appendMessage(controlChat.id, "user", "Control marker for concurrent search.");
-    database.appendMessage(controlChat.id, "assistant", "Control response.");
+    await database.appendMessage(controlChat.id, "user", "Control marker for concurrent search.");
+    await database.appendMessage(controlChat.id, "assistant", "Control response.");
 
     for (let chatIndex = 0; chatIndex < 160; chatIndex += 1) {
-      const chat = database.createChat(`Bulk export ${String(chatIndex)}`);
+      const chat = await database.createChat(`Bulk export ${String(chatIndex)}`);
 
       for (let messageIndex = 0; messageIndex < 6; messageIndex += 1) {
-        database.appendMessage(
+        await database.appendMessage(
           chat.id,
           messageIndex % 2 === 0 ? "user" : "assistant",
           `${String(chatIndex)}:${String(messageIndex)} ${largeTranscriptContent}`,

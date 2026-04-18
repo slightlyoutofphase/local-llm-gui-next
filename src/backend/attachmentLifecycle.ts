@@ -14,14 +14,17 @@ interface PendingAttachmentCleanupOptions {
     chatId: string,
     operation: "append" | "edit" | "regenerate",
     filePaths: string[],
-  ) => string;
+  ) => Promise<string>;
   deletePendingAttachmentFiles: (attachments: MediaAttachmentRecord[]) => Promise<void>;
   log: (message: string) => void;
-  markCleanupJobCompleted: (jobId: string) => void;
-  markCleanupJobFailed: (jobId: string, errorMessage: string) => void;
-  markCleanupJobQueued: (jobId: string, errorMessage: string) => void;
-  markCleanupJobRunning: (jobId: string) => void;
-  markPendingAttachmentsCleanupFailed: (attachmentIds: string[], errorMessage: string) => void;
+  markCleanupJobCompleted: (jobId: string) => Promise<void>;
+  markCleanupJobFailed: (jobId: string, errorMessage: string) => Promise<void>;
+  markCleanupJobQueued: (jobId: string, errorMessage: string) => Promise<void>;
+  markCleanupJobRunning: (jobId: string) => Promise<void>;
+  markPendingAttachmentsCleanupFailed: (
+    attachmentIds: string[],
+    errorMessage: string,
+  ) => Promise<void>;
   messageId: string;
   pendingAttachments: MediaAttachmentRecord[];
 }
@@ -33,12 +36,12 @@ interface RemovedMessageAttachmentCleanupOptions {
     chatId: string,
     operation: "append" | "edit" | "regenerate",
     filePaths: string[],
-  ) => string;
+  ) => Promise<string>;
   log: (message: string) => void;
-  markCleanupJobCompleted: (jobId: string) => void;
-  markCleanupJobFailed: (jobId: string, errorMessage: string) => void;
-  markCleanupJobQueued: (jobId: string, errorMessage: string) => void;
-  markCleanupJobRunning: (jobId: string) => void;
+  markCleanupJobCompleted: (jobId: string) => Promise<void>;
+  markCleanupJobFailed: (jobId: string, errorMessage: string) => Promise<void>;
+  markCleanupJobQueued: (jobId: string, errorMessage: string) => Promise<void>;
+  markCleanupJobRunning: (jobId: string) => Promise<void>;
   operation: "edit" | "regenerate";
   removedMessages: ChatMessageRecord[];
 }
@@ -59,15 +62,15 @@ interface TrackedAttachmentCleanupOptions {
     chatId: string,
     operation: "append" | "edit" | "regenerate",
     filePaths: string[],
-  ) => string;
+  ) => Promise<string>;
   existingCleanupJobId?: string;
   filePaths: string[];
   finalFailureLogMessage: (errorMessage: string) => string;
   log: (message: string) => void;
-  markCleanupJobCompleted: (jobId: string) => void;
-  markCleanupJobFailed: (jobId: string, errorMessage: string) => void;
-  markCleanupJobQueued: (jobId: string, errorMessage: string) => void;
-  markCleanupJobRunning: (jobId: string) => void;
+  markCleanupJobCompleted: (jobId: string) => Promise<void>;
+  markCleanupJobFailed: (jobId: string, errorMessage: string) => Promise<void>;
+  markCleanupJobQueued: (jobId: string, errorMessage: string) => Promise<void>;
+  markCleanupJobRunning: (jobId: string) => Promise<void>;
   maxAttempts: number;
   onFinalFailure?: (errorMessage: string) => void;
   onFinalFailureDescription?: string;
@@ -80,10 +83,10 @@ interface ResumeTrackedAttachmentCleanupJobOptions {
   cleanupJobId: string;
   filePaths: string[];
   log: (message: string) => void;
-  markCleanupJobCompleted: (jobId: string) => void;
-  markCleanupJobFailed: (jobId: string, errorMessage: string) => void;
-  markCleanupJobQueued: (jobId: string, errorMessage: string) => void;
-  markCleanupJobRunning: (jobId: string) => void;
+  markCleanupJobCompleted: (jobId: string) => Promise<void>;
+  markCleanupJobFailed: (jobId: string, errorMessage: string) => Promise<void>;
+  markCleanupJobQueued: (jobId: string, errorMessage: string) => Promise<void>;
+  markCleanupJobRunning: (jobId: string) => Promise<void>;
   maxAttempts: number;
   operation: "append" | "edit" | "regenerate";
   performCleanup: () => Promise<void>;
@@ -224,8 +227,8 @@ export async function cleanupFinalizedPendingAttachments(
     markCleanupJobQueued: options.markCleanupJobQueued,
     markCleanupJobRunning: options.markCleanupJobRunning,
     maxAttempts: MAX_PENDING_ATTACHMENT_CLEANUP_ATTEMPTS,
-    onFinalFailure: (errorMessage) => {
-      options.markPendingAttachmentsCleanupFailed(attachmentIds, errorMessage);
+    onFinalFailure: async (errorMessage) => {
+      await options.markPendingAttachmentsCleanupFailed(attachmentIds, errorMessage);
     },
     onFinalFailureDescription: `cleanup-failed state for ${String(attachmentIds.length)} pending attachment record(s) for chat ${options.chatId} message ${options.messageId}`,
     operation: "append",
@@ -305,7 +308,11 @@ async function runTrackedAttachmentCleanup(
 
   if (!cleanupJobId && options.createCleanupJob) {
     try {
-      cleanupJobId = options.createCleanupJob(options.chatId, options.operation, options.filePaths);
+      cleanupJobId = await options.createCleanupJob(
+        options.chatId,
+        options.operation,
+        options.filePaths,
+      );
     } catch (error) {
       options.log(
         `Failed to create attachment cleanup job after ${options.operation} for chat ${options.chatId}: ${formatAttachmentCleanupError(error)}`,
@@ -316,7 +323,7 @@ async function runTrackedAttachmentCleanup(
   for (let attemptIndex = 0; attemptIndex < options.maxAttempts; attemptIndex += 1) {
     if (cleanupJobId) {
       try {
-        options.markCleanupJobRunning(cleanupJobId);
+        await options.markCleanupJobRunning(cleanupJobId);
       } catch (error) {
         options.log(
           `Failed to mark attachment cleanup job ${cleanupJobId} running after ${options.operation} for chat ${options.chatId}: ${formatAttachmentCleanupError(error)}`,
@@ -329,7 +336,7 @@ async function runTrackedAttachmentCleanup(
 
       if (cleanupJobId) {
         try {
-          options.markCleanupJobCompleted(cleanupJobId);
+          await options.markCleanupJobCompleted(cleanupJobId);
         } catch (error) {
           options.log(
             `Failed to complete attachment cleanup job ${cleanupJobId} after ${options.operation} for chat ${options.chatId}: ${formatAttachmentCleanupError(error)}`,
@@ -345,9 +352,9 @@ async function runTrackedAttachmentCleanup(
       if (cleanupJobId) {
         try {
           if (isFinalAttempt) {
-            options.markCleanupJobFailed(cleanupJobId, errorMessage);
+            await options.markCleanupJobFailed(cleanupJobId, errorMessage);
           } else {
-            options.markCleanupJobQueued(cleanupJobId, errorMessage);
+            await options.markCleanupJobQueued(cleanupJobId, errorMessage);
           }
         } catch (stateError) {
           options.log(

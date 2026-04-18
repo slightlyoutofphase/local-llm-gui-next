@@ -28,12 +28,16 @@ interface TimedRequestInit extends RequestInit {
  * Represents the backend config response payload.
  */
 export interface ConfigResponse {
+  /** Server process build identifier for staleness detection. */
+  buildId?: string;
   /** The persisted application configuration. */
   config: AppConfig;
   /** Optional warning about a non-destructive config recovery path. */
   warning?: string | null;
   /** The latest backend database revision. */
   dbRevision: number;
+  /** Optional error message when config updating fails. */
+  error?: string;
 }
 
 /**
@@ -156,11 +160,29 @@ export async function getConfig(): Promise<ConfigResponse> {
  * @param update Partial config update.
  * @returns The updated backend config response.
  */
-export async function updateConfig(update: Partial<AppConfig>): Promise<ConfigResponse> {
-  return await requestJson<ConfigResponse>("/api/config", {
-    body: JSON.stringify(update),
+export async function updateConfig(
+  update: Partial<AppConfig>,
+  expectedRevision?: number,
+): Promise<ConfigResponse> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+
+  if (typeof expectedRevision === "number") {
+    headers["If-Match"] = expectedRevision.toString();
+  }
+
+  const response = await fetch("/api/config", {
     method: "PUT",
+    headers,
+    body: JSON.stringify(update),
   });
+
+  if (response.ok || response.status === 409) {
+    return (await response.json()) as ConfigResponse;
+  }
+
+  throw new Error(await readErrorResponseMessage(response));
 }
 
 /**

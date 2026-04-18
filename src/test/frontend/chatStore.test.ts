@@ -71,7 +71,9 @@ test("refreshChatIfMessageMissing returns true when the target message is alread
     },
   } as const;
 
-  type ChatStoreStatePatch = Partial<ChatStoreState> | ((state: ChatStoreState) => Partial<ChatStoreState>);
+  type ChatStoreStatePatch =
+    | Partial<ChatStoreState>
+    | ((state: ChatStoreState) => Partial<ChatStoreState>);
 
   const getState = (): ChatStoreState => state as ChatStoreState;
   const setState = (patch: ChatStoreStatePatch) => {
@@ -119,7 +121,9 @@ test("refreshChatIfMessageMissing fetches chat history when the target message i
     messagesByChatId: {},
   };
 
-  type ChatStoreStatePatch = Partial<ChatStoreState> | ((state: ChatStoreState) => Partial<ChatStoreState>);
+  type ChatStoreStatePatch =
+    | Partial<ChatStoreState>
+    | ((state: ChatStoreState) => Partial<ChatStoreState>);
 
   const getState = (): ChatStoreState => state as ChatStoreState;
   const setState = (patch: ChatStoreStatePatch) => {

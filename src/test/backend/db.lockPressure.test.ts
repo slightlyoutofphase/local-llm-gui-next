@@ -46,7 +46,7 @@ describe.serial("AppDatabase SQLite lock pressure", () => {
   });
 
   test("surfaces lock pressure and keeps write latency bounded under real SQLite contention", async () => {
-    const chat = database.createChat("Lock pressure");
+    const chat = await database.createChat("Lock pressure");
     const lockHandle = new Database(applicationPaths.databasePath);
     let lockHandleClosed = false;
     const releaseDelayMs = SQLITE_BUSY_TIMEOUT_MS + 350;

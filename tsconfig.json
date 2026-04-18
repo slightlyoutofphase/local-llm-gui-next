@@ -46,6 +46,7 @@
     "src/components/**/*.ts",
     "src/components/**/*.tsx",
     "src/store/**/*.ts",
+    "src/lib/**/*.ts",
     ".next/dev/types/**/*.ts"
   ],
   "exclude": ["node_modules", "src/backend", "src/test", "out", "dist"]

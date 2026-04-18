@@ -109,7 +109,7 @@ describe("startup cleanup", () => {
   });
 
   test("removes stale pending attachment rows and files", async () => {
-    const chat = database.createChat("Stale pending upload");
+    const chat = await database.createChat("Stale pending upload");
     const messageId = crypto.randomUUID();
     const staleAttachment: MediaAttachmentRecord = {
       byteSize: 4,
@@ -146,7 +146,7 @@ describe("startup cleanup", () => {
   });
 
   test("age-gates pending attachment sweeps so recent staged uploads are left alone", async () => {
-    const chat = database.createChat("Pending upload TTL");
+    const chat = await database.createChat("Pending upload TTL");
     const oldMessageId = crypto.randomUUID();
     const recentMessageId = crypto.randomUUID();
     const minimumAgeMs = 1_000;
@@ -203,7 +203,7 @@ describe("startup cleanup", () => {
   });
 
   test("promotes cleanup_failed lifecycle rows back to committed after recovery", async () => {
-    const chat = database.createChat("Cleanup failed upload");
+    const chat = await database.createChat("Cleanup failed upload");
     const messageId = crypto.randomUUID();
     const staleAttachment: MediaAttachmentRecord = {
       byteSize: 4,
@@ -217,7 +217,7 @@ describe("startup cleanup", () => {
     await mkdir(path.dirname(staleAttachment.filePath), { recursive: true });
     await writeFile(staleAttachment.filePath, Buffer.from([0, 1, 2, 3]));
     database.createPendingAttachment(chat.id, messageId, staleAttachment);
-    database.appendMessage(
+    await database.appendMessage(
       chat.id,
       "user",
       "Has attachment",
@@ -238,7 +238,7 @@ describe("startup cleanup", () => {
         },
       ],
     );
-    database.markPendingAttachmentsCleanupFailed([staleAttachment.id], "disk busy");
+    await database.markPendingAttachmentsCleanupFailed([staleAttachment.id], "disk busy");
 
     await sweepStartupPendingAttachments({
       applicationPaths,
@@ -267,7 +267,9 @@ describe("startup cleanup", () => {
     await mkdir(path.dirname(staleAttachmentPath), { recursive: true });
     await writeFile(staleAttachmentPath, Buffer.from([0, 1, 2, 3]));
 
-    const cleanupJob = database.createAttachmentCleanupJob("chat-1", "edit", [staleAttachmentPath]);
+    const cleanupJob = await database.createAttachmentCleanupJob("chat-1", "edit", [
+      staleAttachmentPath,
+    ]);
 
     await sweepStartupAttachmentCleanupJobs({
       database,
@@ -284,7 +286,7 @@ describe("startup cleanup", () => {
   });
 
   test("retries interrupted running append cleanup jobs on startup within the remaining retry budget", async () => {
-    const chat = database.createChat("Interrupted append cleanup");
+    const chat = await database.createChat("Interrupted append cleanup");
     const messageId = crypto.randomUUID();
     const staleAttachment: MediaAttachmentRecord = {
       byteSize: 4,
@@ -298,7 +300,7 @@ describe("startup cleanup", () => {
     await mkdir(path.dirname(staleAttachment.filePath), { recursive: true });
     await writeFile(staleAttachment.filePath, Buffer.from([0, 1, 2, 3]));
     database.createPendingAttachment(chat.id, messageId, staleAttachment);
-    database.appendMessage(
+    await database.appendMessage(
       chat.id,
       "user",
       "Has attachment",
@@ -320,11 +322,11 @@ describe("startup cleanup", () => {
       ],
     );
 
-    const cleanupJob = database.createAttachmentCleanupJob(chat.id, "append", [
+    const cleanupJob = await database.createAttachmentCleanupJob(chat.id, "append", [
       staleAttachment.filePath,
     ]);
 
-    database.markAttachmentCleanupJobRunning(cleanupJob.id);
+    await database.markAttachmentCleanupJobRunning(cleanupJob.id);
 
     await sweepStartupAttachmentCleanupJobs({
       database,

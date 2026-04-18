@@ -62,6 +62,34 @@ let requestModelSelection: ((modelId: string | null) => void) | null = null;
 let shouldReconnectDebugStream = false;
 const CHAT_HISTORY_PAGE_SIZE = 50;
 
+/**
+ * Module-scoped synchronous lock for generation entry points.
+ *
+ * The Zustand `sending` flag is set via `set()` which flushes asynchronously.
+ * Two concurrent `sendMessage()` calls can both pass the `canStartGeneration`
+ * guard before either `set({ sending: true })` takes effect. This synchronous
+ * flag is acquired _before_ any state reads, closing the TOCTOU window.
+ */
+let generationLockAcquired = false;
+
+/**
+ * Attempts to acquire the module-scoped generation lock.
+ * Returns `true` if the lock was acquired, `false` if it was already held.
+ */
+function tryAcquireGenerationLock(): boolean {
+  if (generationLockAcquired) {
+    return false;
+  }
+
+  generationLockAcquired = true;
+  return true;
+}
+
+/** Releases the module-scoped generation lock. */
+function releaseGenerationLock(): void {
+  generationLockAcquired = false;
+}
+
 export function setChatStoreModelSelectionHandler(
   handler: ((modelId: string | null) => void) | null,
 ): void {
@@ -594,391 +622,434 @@ export const useChatStore = create<ChatStoreState>((set, get) => ({
     revokePendingAttachmentPreviews(clearedAttachments);
   },
   sendMessage: async () => {
-    const capturedComposerValue = get().composerValue;
-    const composerValue = capturedComposerValue.trim();
-    const pendingAttachments = [...get().pendingAttachments];
-
-    if (
-      !canStartGeneration({
-        activeAbortController: get().activeGenerationAbortController,
-        sending: get().sending,
-      })
-    ) {
+    if (!tryAcquireGenerationLock()) {
       return;
     }
-
-    if (!composerValue && pendingAttachments.length === 0) {
-      return;
-    }
-
-    const modelContext = get().modelContext;
-    const activeModel =
-      modelContext.availableModels.find(
-        (model) => model.id === modelContext.runtime?.activeModelId,
-      ) ?? null;
-
-    if (modelContext.runtime?.status !== "ready" || !activeModel) {
-      set({ error: "Load a model before sending a message." });
-      return;
-    }
-
-    const incompatiblePendingAttachments = pendingAttachments.filter(
-      (attachment) =>
-        !isAttachmentKindSupported(attachment.kind, activeModel, modelContext.runtime),
-    );
-
-    if (incompatiblePendingAttachments.length > 0) {
-      const attachmentCapabilities = getAttachmentCapabilities(activeModel, modelContext.runtime);
-
-      set({
-        error: `Remove incompatible attachments before sending. ${attachmentCapabilities.hint}`,
-      });
-      return;
-    }
-
-    if (wouldExceedAggregateUploadLimit(0, sumUploadBytes(pendingAttachments))) {
-      set({ error: buildAggregateUploadLimitError() });
-      return;
-    }
-
-    let activeChatId = get().activeChatId;
-    const messageId = crypto.randomUUID();
-
-    set({ sending: true });
 
     try {
-      if (!activeChatId) {
-        activeChatId = await get().createChat({ preferActiveRuntime: true });
+      const capturedComposerValue = get().composerValue;
+      const composerValue = capturedComposerValue.trim();
+      const pendingAttachments = [...get().pendingAttachments];
 
-        if (!activeChatId) {
-          set({ sending: false });
-          return;
-        }
+      if (
+        !canStartGeneration({
+          activeAbortController: get().activeGenerationAbortController,
+          sending: get().sending,
+        })
+      ) {
+        return;
       }
 
-      const chatId = activeChatId;
-      const sentAttachmentIds = new Set(pendingAttachments.map((attachment) => attachment.id));
-      let uploadedAttachments: ChatMessageRecord["mediaAttachments"] = [];
-
-      if (pendingAttachments.length > 0) {
-        const uploadResponse = await uploadMediaAttachments(
-          chatId,
-          messageId,
-          pendingAttachments.map((attachment) => attachment.file),
-        );
-        uploadedAttachments = uploadResponse.attachments;
+      if (!composerValue && pendingAttachments.length === 0) {
+        return;
       }
 
-      const userMessageResponse = await appendChatMessage(
-        chatId,
-        "user",
-        composerValue,
-        uploadedAttachments,
-        undefined,
-        false,
-        {},
-        messageId,
-      );
-      console.log("[sendMessage] user message appended:", userMessageResponse.message.id);
-      await writeUiCacheBestEffort({ dbRevision: userMessageResponse.dbRevision });
-      const userMessage = userMessageResponse.message;
-      const chatHistory = [...(get().messagesByChatId[chatId] ?? []), userMessage];
-
-      set((state) => {
-        const nextDrafts = { ...state.draftsByChatId };
-        const nextPendingAttachmentDraftsByChatId = { ...state.pendingAttachmentDraftsByChatId };
-        const currentDraftForChat = state.composerValue;
-
-        if (currentDraftForChat === capturedComposerValue) {
-          delete nextDrafts[chatId];
-        } else if (currentDraftForChat.trim().length > 0) {
-          nextDrafts[chatId] = currentDraftForChat;
-        } else {
-          delete nextDrafts[chatId];
-        }
-
-        delete nextPendingAttachmentDraftsByChatId[chatId];
-
-        return {
-          chats: updateChatTimestamp(state.chats, chatId),
-          composerValue: state.composerValue === capturedComposerValue ? "" : state.composerValue,
-          draftsByChatId: nextDrafts,
-          error: null,
-          knownDbRevision: Math.max(state.knownDbRevision, userMessageResponse.dbRevision),
-          messagesByChatId: updateCachedChatMessages({
-            activeChatId: state.activeChatId,
-            activeGenerationChatId: state.activeGenerationChatId,
-            chatId,
-            messages: chatHistory,
-            messagesByChatId: state.messagesByChatId,
-          }),
-          pendingAttachmentDraftsByChatId: nextPendingAttachmentDraftsByChatId,
-          pendingAttachments: state.pendingAttachments.filter(
-            (attachment) => !sentAttachmentIds.has(attachment.id),
-          ),
-        };
-      });
-      revokePendingAttachmentPreviews(pendingAttachments);
-
-      await runGenerationFromHistory({
-        chatId,
-        chatMessages: chatHistory,
-        getState: get,
-        historyLoadedCompletely: true,
-        setState: set,
-      });
-    } catch (error) {
-      if (typeof activeChatId === "string" && pendingAttachments.length > 0) {
-        try {
-          await deletePendingMediaAttachments(
-            activeChatId,
-            messageId,
-            pendingAttachments.map((attachment) => attachment.id),
-          );
-        } catch {
-          // Best-effort cleanup; preserve the current error for user feedback.
-        }
-      }
-
-      set({
-        error:
-          error instanceof Error
-            ? error.message
-            : "Failed to persist the user message or upload attachments.",
-        sending: false,
-      });
-    }
-  },
-  editMessage: async (messageId, content) => {
-    const chatId = get().activeChatId;
-    const nextContent = content.trim();
-
-    if (
-      !chatId ||
-      !nextContent ||
-      !canStartGeneration({
-        activeAbortController: get().activeGenerationAbortController,
-        sending: get().sending,
-      })
-    ) {
-      return;
-    }
-
-    const modelContext = get().modelContext;
-
-    if (modelContext.runtime?.status !== "ready" || !modelContext.runtime.activeModelId) {
-      set({ error: "Load a model before regenerating from an edited message." });
-      return;
-    }
-
-    set({ sending: true });
-
-    try {
-      const response = await editChatMessage(chatId, messageId, nextContent);
-      await writeUiCacheBestEffort({ dbRevision: response.dbRevision });
-
-      await runGenerationFromHistory({
-        chatId,
-        chatMessages: response.messages,
-        getState: get,
-        historyLoadedCompletely: true,
-        setState: set,
-        updatedChat: response.chat,
-      });
-    } catch (error) {
-      set({
-        error: error instanceof Error ? error.message : "Failed to edit the selected message.",
-        sending: false,
-      });
-    }
-  },
-  regenerateMessage: async (messageId) => {
-    const chatId = get().activeChatId;
-
-    if (
-      !chatId ||
-      !canStartGeneration({
-        activeAbortController: get().activeGenerationAbortController,
-        sending: get().sending,
-      })
-    ) {
-      return;
-    }
-
-    const modelContext = get().modelContext;
-
-    if (modelContext.runtime?.status !== "ready" || !modelContext.runtime.activeModelId) {
-      set({ error: "Load a model before regenerating a response." });
-      return;
-    }
-
-    set({ sending: true });
-
-    try {
-      const response = await regenerateChatMessage(chatId, messageId);
-      await writeUiCacheBestEffort({ dbRevision: response.dbRevision });
-
-      await runGenerationFromHistory({
-        chatId,
-        chatMessages: response.messages,
-        getState: get,
-        historyLoadedCompletely: true,
-        setState: set,
-        updatedChat: response.chat,
-      });
-    } catch (error) {
-      set({
-        error:
-          error instanceof Error ? error.message : "Failed to regenerate the selected response.",
-        sending: false,
-      });
-    }
-  },
-  branchMessage: async (messageId) => {
-    const chatId = get().activeChatId;
-
-    if (
-      !chatId ||
-      !canStartGeneration({
-        activeAbortController: get().activeGenerationAbortController,
-        sending: get().sending,
-      })
-    ) {
-      return;
-    }
-
-    set({ sending: true });
-
-    try {
-      const response = await branchChatMessage(chatId, messageId);
       const modelContext = get().modelContext;
-      const preferredModelId = resolvePreferredChatModelId({
-        availableModels: modelContext.availableModels,
-        chat: response.chat,
-        currentSelectedModelId: modelContext.selectedModelId,
-      });
+      const activeModel =
+        modelContext.availableModels.find(
+          (model) => model.id === modelContext.runtime?.activeModelId,
+        ) ?? null;
 
-      set((state) => ({
-        activeChatId: response.chat.id,
-        chatPaginationById: {
-          ...state.chatPaginationById,
-          [response.chat.id]: {
-            hasOlderMessages: false,
-            nextBeforeSequence: null,
-          },
-        },
-        chats: mergeUpdatedChat(state.chats, response.chat),
-        error: null,
-        knownDbRevision: response.dbRevision,
-        messagesByChatId: updateCachedChatMessages({
-          activeChatId: response.chat.id,
-          activeGenerationChatId: state.activeGenerationChatId,
-          chatId: response.chat.id,
-          messages: response.messages,
-          messagesByChatId: state.messagesByChatId,
-        }),
-        sending: false,
-      }));
-
-      if (preferredModelId !== modelContext.selectedModelId) {
-        requestModelSelection?.(preferredModelId);
+      if (modelContext.runtime?.status !== "ready" || !activeModel) {
+        set({ error: "Load a model before sending a message." });
+        return;
       }
 
-      await writeUiCacheBestEffort({
-        dbRevision: response.dbRevision,
-        lastChatId: response.chat.id,
-      });
-    } catch (error) {
-      set({
-        error: error instanceof Error ? error.message : "Failed to branch the selected transcript.",
-        sending: false,
-      });
-    }
-  },
-  resolvePendingToolConfirmation: async (assistantMessageId, approved) => {
-    const chatId = get().activeChatId;
+      const incompatiblePendingAttachments = pendingAttachments.filter(
+        (attachment) =>
+          !isAttachmentKindSupported(attachment.kind, activeModel, modelContext.runtime),
+      );
 
-    if (
-      !chatId ||
-      !canStartGeneration({
-        activeAbortController: get().activeGenerationAbortController,
-        sending: get().sending,
-      })
-    ) {
-      return;
-    }
+      if (incompatiblePendingAttachments.length > 0) {
+        const attachmentCapabilities = getAttachmentCapabilities(activeModel, modelContext.runtime);
 
-    await refreshChatIfMessageMissing(chatId, assistantMessageId, get, set);
-
-    const targetMessage = (get().messagesByChatId[chatId] ?? []).find(
-      (message) => message.id === assistantMessageId,
-    );
-    const confirmation = targetMessage ? getToolConfirmationMetadata(targetMessage) : null;
-
-    if (!targetMessage || !confirmation || confirmation.state !== "pending") {
-      if (!targetMessage) {
         set({
-          error: "The tool-confirmation message was removed before approval could be applied.",
+          error: `Remove incompatible attachments before sending. ${attachmentCapabilities.hint}`,
+        });
+        return;
+      }
+
+      if (wouldExceedAggregateUploadLimit(0, sumUploadBytes(pendingAttachments))) {
+        set({ error: buildAggregateUploadLimitError() });
+        return;
+      }
+
+      let activeChatId = get().activeChatId;
+      const messageId = crypto.randomUUID();
+
+      set({ sending: true });
+
+      try {
+        if (!activeChatId) {
+          activeChatId = await get().createChat({ preferActiveRuntime: true });
+
+          if (!activeChatId) {
+            set({ sending: false });
+            return;
+          }
+        }
+
+        const chatId = activeChatId;
+        const sentAttachmentIds = new Set(pendingAttachments.map((attachment) => attachment.id));
+        let uploadedAttachments: ChatMessageRecord["mediaAttachments"] = [];
+
+        if (pendingAttachments.length > 0) {
+          const uploadResponse = await uploadMediaAttachments(
+            chatId,
+            messageId,
+            pendingAttachments.map((attachment) => attachment.file),
+          );
+          uploadedAttachments = uploadResponse.attachments;
+        }
+
+        const userMessageResponse = await appendChatMessage(
+          chatId,
+          "user",
+          composerValue,
+          uploadedAttachments,
+          undefined,
+          false,
+          {},
+          messageId,
+        );
+        console.log("[sendMessage] user message appended:", userMessageResponse.message.id);
+        await writeUiCacheBestEffort({ dbRevision: userMessageResponse.dbRevision });
+        const userMessage = userMessageResponse.message;
+        const chatHistory = [...(get().messagesByChatId[chatId] ?? []), userMessage];
+
+        set((state) => {
+          const nextDrafts = { ...state.draftsByChatId };
+          const nextPendingAttachmentDraftsByChatId = { ...state.pendingAttachmentDraftsByChatId };
+          const currentDraftForChat = state.composerValue;
+
+          if (currentDraftForChat === capturedComposerValue) {
+            delete nextDrafts[chatId];
+          } else if (currentDraftForChat.trim().length > 0) {
+            nextDrafts[chatId] = currentDraftForChat;
+          } else {
+            delete nextDrafts[chatId];
+          }
+
+          delete nextPendingAttachmentDraftsByChatId[chatId];
+
+          return {
+            chats: updateChatTimestamp(state.chats, chatId),
+            composerValue: state.composerValue === capturedComposerValue ? "" : state.composerValue,
+            draftsByChatId: nextDrafts,
+            error: null,
+            knownDbRevision: Math.max(state.knownDbRevision, userMessageResponse.dbRevision),
+            messagesByChatId: updateCachedChatMessages({
+              activeChatId: state.activeChatId,
+              activeGenerationChatId: state.activeGenerationChatId,
+              chatId,
+              messages: chatHistory,
+              messagesByChatId: state.messagesByChatId,
+            }),
+            pendingAttachmentDraftsByChatId: nextPendingAttachmentDraftsByChatId,
+            pendingAttachments: state.pendingAttachments.filter(
+              (attachment) => !sentAttachmentIds.has(attachment.id),
+            ),
+          };
+        });
+        revokePendingAttachmentPreviews(pendingAttachments);
+
+        await runGenerationFromHistory({
+          chatId,
+          chatMessages: chatHistory,
+          getState: get,
+          historyLoadedCompletely: true,
+          setState: set,
+        });
+      } catch (error) {
+        if (typeof activeChatId === "string" && pendingAttachments.length > 0) {
+          try {
+            await deletePendingMediaAttachments(
+              activeChatId,
+              messageId,
+              pendingAttachments.map((attachment) => attachment.id),
+            );
+          } catch {
+            // Best-effort cleanup; preserve the current error for user feedback.
+          }
+        }
+
+        set({
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to persist the user message or upload attachments.",
           sending: false,
         });
       }
-
+    } finally {
+      releaseGenerationLock();
+    }
+  },
+  editMessage: async (messageId, content) => {
+    if (!tryAcquireGenerationLock()) {
       return;
     }
 
-    const previousMetadata = { ...targetMessage.metadata };
+    try {
+      const chatId = get().activeChatId;
+      const nextContent = content.trim();
 
-    set({ sending: true });
+      if (
+        !chatId ||
+        !nextContent ||
+        !canStartGeneration({
+          activeAbortController: get().activeGenerationAbortController,
+          sending: get().sending,
+        })
+      ) {
+        return;
+      }
 
-    updateStoredMessageMetadata(chatId, assistantMessageId, set, () => ({
-      ...previousMetadata,
-      toolConfirmation: {
-        ...confirmation,
-        state: approved ? "approved" : "rejected",
-      },
-    }));
+      const modelContext = get().modelContext;
 
-    const succeeded = await runToolConfirmationResolution({
-      approved,
-      assistantMessageId,
-      chatId,
-      getState: get,
-      setState: set,
-    });
+      if (modelContext.runtime?.status !== "ready" || !modelContext.runtime.activeModelId) {
+        set({ error: "Load a model before regenerating from an edited message." });
+        return;
+      }
 
-    const currentMessage = (get().messagesByChatId[chatId] ?? []).find(
-      (message) => message.id === assistantMessageId,
-    );
+      set({ sending: true });
 
-    if (!succeeded) {
-      if (!currentMessage) {
-        await refreshChatIfMessageMissing(chatId, assistantMessageId, get, set);
-      } else {
+      try {
+        const response = await editChatMessage(chatId, messageId, nextContent);
+        await writeUiCacheBestEffort({ dbRevision: response.dbRevision });
+
+        await runGenerationFromHistory({
+          chatId,
+          chatMessages: response.messages,
+          getState: get,
+          historyLoadedCompletely: true,
+          setState: set,
+          updatedChat: response.chat,
+        });
+      } catch (error) {
+        set({
+          error: error instanceof Error ? error.message : "Failed to edit the selected message.",
+          sending: false,
+        });
+      }
+    } finally {
+      releaseGenerationLock();
+    }
+  },
+  regenerateMessage: async (messageId) => {
+    if (!tryAcquireGenerationLock()) {
+      return;
+    }
+
+    try {
+      const chatId = get().activeChatId;
+
+      if (
+        !chatId ||
+        !canStartGeneration({
+          activeAbortController: get().activeGenerationAbortController,
+          sending: get().sending,
+        })
+      ) {
+        return;
+      }
+
+      const modelContext = get().modelContext;
+
+      if (modelContext.runtime?.status !== "ready" || !modelContext.runtime.activeModelId) {
+        set({ error: "Load a model before regenerating a response." });
+        return;
+      }
+
+      set({ sending: true });
+
+      try {
+        const response = await regenerateChatMessage(chatId, messageId);
+        await writeUiCacheBestEffort({ dbRevision: response.dbRevision });
+
+        await runGenerationFromHistory({
+          chatId,
+          chatMessages: response.messages,
+          getState: get,
+          historyLoadedCompletely: true,
+          setState: set,
+          updatedChat: response.chat,
+        });
+      } catch (error) {
+        set({
+          error:
+            error instanceof Error ? error.message : "Failed to regenerate the selected response.",
+          sending: false,
+        });
+      }
+    } finally {
+      releaseGenerationLock();
+    }
+  },
+  branchMessage: async (messageId) => {
+    if (!tryAcquireGenerationLock()) {
+      return;
+    }
+
+    try {
+      const chatId = get().activeChatId;
+
+      if (
+        !chatId ||
+        !canStartGeneration({
+          activeAbortController: get().activeGenerationAbortController,
+          sending: get().sending,
+        })
+      ) {
+        return;
+      }
+
+      set({ sending: true });
+
+      try {
+        const response = await branchChatMessage(chatId, messageId);
+        const modelContext = get().modelContext;
+        const preferredModelId = resolvePreferredChatModelId({
+          availableModels: modelContext.availableModels,
+          chat: response.chat,
+          currentSelectedModelId: modelContext.selectedModelId,
+        });
+
         set((state) => ({
+          activeChatId: response.chat.id,
+          chatPaginationById: {
+            ...state.chatPaginationById,
+            [response.chat.id]: {
+              hasOlderMessages: false,
+              nextBeforeSequence: null,
+            },
+          },
+          chats: mergeUpdatedChat(state.chats, response.chat),
+          error: null,
+          knownDbRevision: response.dbRevision,
           messagesByChatId: updateCachedChatMessages({
-            activeChatId: state.activeChatId,
+            activeChatId: response.chat.id,
             activeGenerationChatId: state.activeGenerationChatId,
-            chatId,
-            messages:
-              state.messagesByChatId[chatId]?.map((message) =>
-                message.id === assistantMessageId
-                  ? { ...message, metadata: previousMetadata }
-                  : message,
-              ) ?? [],
+            chatId: response.chat.id,
+            messages: response.messages,
             messagesByChatId: state.messagesByChatId,
           }),
           sending: false,
         }));
-      }
 
+        if (preferredModelId !== modelContext.selectedModelId) {
+          requestModelSelection?.(preferredModelId);
+        }
+
+        await writeUiCacheBestEffort({
+          dbRevision: response.dbRevision,
+          lastChatId: response.chat.id,
+        });
+      } catch (error) {
+        set({
+          error:
+            error instanceof Error ? error.message : "Failed to branch the selected transcript.",
+          sending: false,
+        });
+      }
+    } finally {
+      releaseGenerationLock();
+    }
+  },
+  resolvePendingToolConfirmation: async (assistantMessageId, approved) => {
+    if (!tryAcquireGenerationLock()) {
       return;
     }
 
-    if (
-      !currentMessage ||
-      getToolConfirmationMetadata(currentMessage)?.state !== (approved ? "approved" : "rejected")
-    ) {
+    try {
+      const chatId = get().activeChatId;
+
+      if (
+        !chatId ||
+        !canStartGeneration({
+          activeAbortController: get().activeGenerationAbortController,
+          sending: get().sending,
+        })
+      ) {
+        return;
+      }
+
       await refreshChatIfMessageMissing(chatId, assistantMessageId, get, set);
+
+      const targetMessage = (get().messagesByChatId[chatId] ?? []).find(
+        (message) => message.id === assistantMessageId,
+      );
+      const confirmation = targetMessage ? getToolConfirmationMetadata(targetMessage) : null;
+
+      if (!targetMessage || !confirmation || confirmation.state !== "pending") {
+        if (!targetMessage) {
+          set({
+            error: "The tool-confirmation message was removed before approval could be applied.",
+            sending: false,
+          });
+        }
+
+        return;
+      }
+
+      const previousMetadata = { ...targetMessage.metadata };
+
+      set({ sending: true });
+
+      updateStoredMessageMetadata(chatId, assistantMessageId, set, () => ({
+        ...previousMetadata,
+        toolConfirmation: {
+          ...confirmation,
+          state: approved ? "approved" : "rejected",
+        },
+      }));
+
+      const succeeded = await runToolConfirmationResolution({
+        approved,
+        assistantMessageId,
+        chatId,
+        getState: get,
+        setState: set,
+      });
+
+      const currentMessage = (get().messagesByChatId[chatId] ?? []).find(
+        (message) => message.id === assistantMessageId,
+      );
+
+      if (!succeeded) {
+        if (!currentMessage) {
+          await refreshChatIfMessageMissing(chatId, assistantMessageId, get, set);
+        } else {
+          set((state) => ({
+            messagesByChatId: updateCachedChatMessages({
+              activeChatId: state.activeChatId,
+              activeGenerationChatId: state.activeGenerationChatId,
+              chatId,
+              messages:
+                state.messagesByChatId[chatId]?.map((message) =>
+                  message.id === assistantMessageId
+                    ? { ...message, metadata: previousMetadata }
+                    : message,
+                ) ?? [],
+              messagesByChatId: state.messagesByChatId,
+            }),
+            sending: state.activeChatId === chatId ? state.sending : false,
+          }));
+        }
+
+        return;
+      }
+
+      if (
+        !currentMessage ||
+        getToolConfirmationMetadata(currentMessage)?.state !== (approved ? "approved" : "rejected")
+      ) {
+        if (get().activeChatId === chatId) {
+          await refreshChatIfMessageMissing(chatId, assistantMessageId, get, set);
+        }
+      }
+    } finally {
+      releaseGenerationLock();
     }
   },
   stopMessageGeneration: async () => {
@@ -1308,45 +1379,55 @@ async function runAssistantStream(options: {
     let persistedAssistantMessage: ChatMessageRecord | null = null;
 
     if (hasPartialOutput) {
-      const structuredOutputMetadata =
-        structuredOutputSettings.mode !== "off"
-          ? validateStructuredOutputResult({
-              content: assistantContent,
-              mode: structuredOutputSettings.mode,
-              schemaText: structuredOutputSettings.schemaText,
-              truncated: true,
-            })
-          : null;
+      try {
+        const structuredOutputMetadata =
+          structuredOutputSettings.mode !== "off"
+            ? validateStructuredOutputResult({
+                content: assistantContent,
+                mode: structuredOutputSettings.mode,
+                schemaText: structuredOutputSettings.schemaText,
+                truncated: true,
+              })
+            : null;
 
-      const assistantMessageResponse = await appendChatMessage(
-        chatId,
-        "assistant",
-        assistantContent,
-        [],
-        reasoningContent || undefined,
-        true,
-        {
-          ...(structuredOutputMetadata ? { structuredOutput: structuredOutputMetadata } : {}),
-          truncated: true,
-        },
-      );
-
-      persistedAssistantMessage = assistantMessageResponse.message;
-
-      setState((state) => ({
-        knownDbRevision: Math.max(state.knownDbRevision, assistantMessageResponse.dbRevision),
-        messagesByChatId: updateCachedChatMessages({
-          activeChatId: state.activeChatId,
-          activeGenerationChatId: state.activeGenerationChatId,
+        const assistantMessageResponse = await appendChatMessage(
           chatId,
-          messages: replaceStreamingMessage(
-            state.messagesByChatId[chatId] ?? [],
-            streamingMessage.id,
-            assistantMessageResponse.message,
-          ),
-          messagesByChatId: state.messagesByChatId,
-        }),
-      }));
+          "assistant",
+          assistantContent,
+          [],
+          reasoningContent || undefined,
+          true,
+          {
+            ...(structuredOutputMetadata ? { structuredOutput: structuredOutputMetadata } : {}),
+            truncated: true,
+          },
+        );
+
+        persistedAssistantMessage = assistantMessageResponse.message;
+
+        setState((state) => ({
+          knownDbRevision: Math.max(state.knownDbRevision, assistantMessageResponse.dbRevision),
+          messagesByChatId: updateCachedChatMessages({
+            activeChatId: state.activeChatId,
+            activeGenerationChatId: state.activeGenerationChatId,
+            chatId,
+            messages: replaceStreamingMessage(
+              state.messagesByChatId[chatId] ?? [],
+              streamingMessage.id,
+              assistantMessageResponse.message,
+            ),
+            messagesByChatId: state.messagesByChatId,
+          }),
+        }));
+      } catch (persistError) {
+        // Keep the streaming message visible so the user can copy the partial content manually.
+        setState({
+          error:
+            persistError instanceof Error
+              ? `Failed to save partial response: ${persistError.message}. Your generated content may be lost.`
+              : "Failed to save partial response. Your generated content may be lost.",
+        });
+      }
     }
 
     setState((state) => ({

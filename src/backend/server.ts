@@ -34,7 +34,7 @@ import {
 import { deleteAttachmentArtifacts } from "./attachmentReplay";
 import { buildAutoNamePrompt, normalizeGeneratedChatTitle } from "./autoNaming";
 import { branchChatAtMessage, cleanupMessageAttachments } from "./chatMutations";
-import { ConfigStore } from "./config";
+import { ConfigStore, ConcurrentConfigUpdateError } from "./config";
 import { createChatGenerationResponse, createToolConfirmationResponse } from "./chatOrchestrator";
 import { AppDatabase, ChatNotFoundError } from "./db";
 import { DebugLogService } from "./debug";
@@ -99,6 +99,14 @@ let llamaServerManager!: LlamaServerManager;
 let server!: ReturnType<typeof Bun.serve>;
 let shuttingDown = false;
 let staleArtifactSweepHandle: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * Stable build identifier generated once per server process lifetime.
+ * The frontend caches this value and forces a full page reload when it
+ * detects that the backend has restarted with a different build ID,
+ * preventing stale JS chunk references after binary upgrades (S2).
+ */
+const APP_BUILD_ID = crypto.randomUUID();
 
 const STALE_ARTIFACT_SWEEP_INTERVAL_MS = 15 * 60 * 1000;
 const STALE_ARTIFACT_MAX_AGE_MS = 15 * 60 * 1000;
@@ -177,6 +185,9 @@ async function startServer(): Promise<void> {
     },
   });
 
+  // Eager stale artifact sweep to catch orphaned artifacts from prior crashes.
+  await runPeriodicStaleArtifactSweep();
+
   staleArtifactSweepHandle = setInterval(() => {
     void runPeriodicStaleArtifactSweep();
   }, STALE_ARTIFACT_SWEEP_INTERVAL_MS);
@@ -222,7 +233,7 @@ async function startServer(): Promise<void> {
 
     if (stalePendingAttachments.length > 0) {
       await deleteAttachmentFiles(stalePendingAttachments);
-      database.markPendingAttachmentsAbandoned(
+      await database.markPendingAttachmentsAbandoned(
         stalePendingAttachments.map((attachment) => attachment.id),
         "superseded by a newer upload for the same message slot",
       );
@@ -327,7 +338,7 @@ async function startServer(): Promise<void> {
       }
     } catch (error) {
       await deleteAttachmentFiles(attachments);
-      database.markPendingAttachmentsAbandoned(
+      await database.markPendingAttachmentsAbandoned(
         attachments.map((attachment) => attachment.id),
         error instanceof Error ? error.message : String(error),
       );
@@ -357,6 +368,7 @@ async function startServer(): Promise<void> {
       "/api/chats/:chatId/tool-confirmation": false,
       "/api/health": () =>
         Response.json({
+          buildId: APP_BUILD_ID,
           dbRevision: database.getRevision(),
           ok: true,
           runtime: llamaServerManager.getSnapshot(),
@@ -367,6 +379,7 @@ async function startServer(): Promise<void> {
           const config = await configStore.getConfig();
 
           return Response.json({
+            buildId: APP_BUILD_ID,
             config,
             dbRevision: database.getRevision(),
             warning: configStore.getLoadWarning(),
@@ -374,15 +387,38 @@ async function startServer(): Promise<void> {
         },
         PUT: async (request) => {
           const body = await readJsonObject(request);
-          const updatedConfig = await configStore.updateConfig(body as Partial<AppConfig>);
+          const ifMatch = request.headers.get("if-match")?.trim() ?? undefined;
+          const expectedRevision = ifMatch ? Number(ifMatch) : undefined;
 
-          debugLogService.applySettings(updatedConfig.debug);
+          try {
+            const updatedConfig = await configStore.updateConfig(
+              body as Partial<AppConfig>,
+              Number.isFinite(expectedRevision) ? expectedRevision : undefined,
+            );
 
-          return Response.json({
-            config: updatedConfig,
-            dbRevision: database.getRevision(),
-            warning: configStore.getLoadWarning(),
-          });
+            debugLogService.applySettings(updatedConfig.debug);
+
+            return Response.json({
+              config: updatedConfig,
+              dbRevision: database.getRevision(),
+              warning: configStore.getLoadWarning(),
+            });
+          } catch (error) {
+            if (error instanceof ConcurrentConfigUpdateError) {
+              return Response.json(
+                {
+                  config: error.currentConfig,
+                  dbRevision: database.getRevision(),
+                  warning: configStore.getLoadWarning(),
+                  error:
+                    "Configuration was modified by another tab or process. Please review the updated settings and try again.",
+                },
+                { status: 409 },
+              );
+            }
+
+            throw error;
+          }
         },
       },
       "/api/models": {
@@ -473,7 +509,7 @@ async function startServer(): Promise<void> {
             return createErrorResponse(404, `Model not found: ${body.modelId}`);
           }
 
-          database.ensureDefaultPresets(selectedModel);
+          await database.ensureDefaultPresets(selectedModel);
 
           const loadPreset = resolveLoadPreset(selectedModel, database, body.loadPresetId);
           const systemPromptPreset = resolveSystemPromptPreset(
@@ -535,7 +571,7 @@ async function startServer(): Promise<void> {
             lastUsedModelId?: string;
             title?: string;
           };
-          const createdChat = database.createChat(body.title, body.lastUsedModelId);
+          const createdChat = await database.createChat(body.title, body.lastUsedModelId);
 
           debugLogService.verboseServerLog(
             `Created chat ${createdChat.id} for a new conversation${typeof body.lastUsedModelId === "string" ? ` using model ${body.lastUsedModelId}` : ""}.`,
@@ -552,7 +588,7 @@ async function startServer(): Promise<void> {
         DELETE: async (request) => {
           assertTrustedWriteRequest(request);
           await llamaServerManager.stopGeneration();
-          const deletedChatIds = database.deleteAllChats();
+          const deletedChatIds = await database.deleteAllChats();
 
           for (const chatId of deletedChatIds) {
             await rm(path.join(applicationPaths.mediaDir, chatId), {
@@ -628,7 +664,7 @@ async function startServer(): Promise<void> {
             return createErrorResponse(404, `Chat not found: ${request.params.chatId}`);
           }
 
-          const deleted = database.deleteChat(request.params.chatId);
+          const deleted = await database.deleteChat(request.params.chatId);
 
           if (!deleted) {
             return createErrorResponse(404, `Chat not found: ${request.params.chatId}`);
@@ -707,7 +743,7 @@ async function startServer(): Promise<void> {
           let createdMessage;
 
           try {
-            createdMessage = database.appendMessage(
+            createdMessage = await database.appendMessage(
               request.params.chatId,
               messageRole,
               typeof body.content === "string" ? body.content : "",
@@ -736,26 +772,26 @@ async function startServer(): Promise<void> {
           try {
             await cleanupFinalizedPendingAttachments({
               chatId: request.params.chatId,
-              createCleanupJob: (chatId, operation, filePaths) =>
-                database.createAttachmentCleanupJob(chatId, operation, filePaths).id,
+              createCleanupJob: async (chatId, operation, filePaths) =>
+                (await database.createAttachmentCleanupJob(chatId, operation, filePaths)).id,
               deletePendingAttachmentFiles: deleteAttachmentFiles,
               log: (message) => {
                 debugLogService.serverLog(message);
               },
-              markCleanupJobCompleted: (jobId) => {
-                database.markAttachmentCleanupJobCompleted(jobId);
+              markCleanupJobCompleted: async (jobId) => {
+                await database.markAttachmentCleanupJobCompleted(jobId);
               },
-              markCleanupJobFailed: (jobId, errorMessage) => {
-                database.markAttachmentCleanupJobFailed(jobId, errorMessage);
+              markCleanupJobFailed: async (jobId, errorMessage) => {
+                await database.markAttachmentCleanupJobFailed(jobId, errorMessage);
               },
-              markCleanupJobQueued: (jobId, errorMessage) => {
-                database.requeueAttachmentCleanupJob(jobId, errorMessage);
+              markCleanupJobQueued: async (jobId, errorMessage) => {
+                await database.requeueAttachmentCleanupJob(jobId, errorMessage);
               },
-              markCleanupJobRunning: (jobId) => {
-                database.markAttachmentCleanupJobRunning(jobId);
+              markCleanupJobRunning: async (jobId) => {
+                await database.markAttachmentCleanupJobRunning(jobId);
               },
-              markPendingAttachmentsCleanupFailed: (attachmentIds, errorMessage) => {
-                database.markPendingAttachmentsCleanupFailed(attachmentIds, errorMessage);
+              markPendingAttachmentsCleanupFailed: async (attachmentIds, errorMessage) => {
+                await database.markPendingAttachmentsCleanupFailed(attachmentIds, errorMessage);
               },
               messageId: createdMessage.id,
               pendingAttachments: preparedAttachments.pendingAttachments,
@@ -808,7 +844,7 @@ async function startServer(): Promise<void> {
             return createErrorResponse(400, "Only user messages can be edited.");
           }
 
-          const result = database.replaceMessageAndTruncateFollowing(
+          const result = await database.replaceMessageAndTruncateFollowing(
             request.params.chatId,
             body.messageId,
             body.content.trim(),
@@ -822,22 +858,22 @@ async function startServer(): Promise<void> {
             chatId: request.params.chatId,
             cleanupRemovedMessageAttachments: (messages) =>
               cleanupMessageAttachments(messages, database),
-            createCleanupJob: (chatId, operation, filePaths) =>
-              database.createAttachmentCleanupJob(chatId, operation, filePaths).id,
+            createCleanupJob: async (chatId, operation, filePaths) =>
+              (await database.createAttachmentCleanupJob(chatId, operation, filePaths)).id,
             log: (message) => {
               debugLogService.serverLog(message);
             },
-            markCleanupJobCompleted: (jobId) => {
-              database.markAttachmentCleanupJobCompleted(jobId);
+            markCleanupJobCompleted: async (jobId) => {
+              await database.markAttachmentCleanupJobCompleted(jobId);
             },
-            markCleanupJobFailed: (jobId, errorMessage) => {
-              database.markAttachmentCleanupJobFailed(jobId, errorMessage);
+            markCleanupJobFailed: async (jobId, errorMessage) => {
+              await database.markAttachmentCleanupJobFailed(jobId, errorMessage);
             },
-            markCleanupJobQueued: (jobId, errorMessage) => {
-              database.requeueAttachmentCleanupJob(jobId, errorMessage);
+            markCleanupJobQueued: async (jobId, errorMessage) => {
+              await database.requeueAttachmentCleanupJob(jobId, errorMessage);
             },
-            markCleanupJobRunning: (jobId) => {
-              database.markAttachmentCleanupJobRunning(jobId);
+            markCleanupJobRunning: async (jobId) => {
+              await database.markAttachmentCleanupJobRunning(jobId);
             },
             operation: "edit",
             removedMessages: result.removedMessages,
@@ -872,7 +908,10 @@ async function startServer(): Promise<void> {
             return createErrorResponse(400, "Only assistant messages can be regenerated.");
           }
 
-          const result = database.truncateChatFromMessage(request.params.chatId, body.messageId);
+          const result = await database.truncateChatFromMessage(
+            request.params.chatId,
+            body.messageId,
+          );
 
           if (!result) {
             return createErrorResponse(404, `Chat not found: ${request.params.chatId}`);
@@ -882,22 +921,22 @@ async function startServer(): Promise<void> {
             chatId: request.params.chatId,
             cleanupRemovedMessageAttachments: (messages) =>
               cleanupMessageAttachments(messages, database),
-            createCleanupJob: (chatId, operation, filePaths) =>
-              database.createAttachmentCleanupJob(chatId, operation, filePaths).id,
+            createCleanupJob: async (chatId, operation, filePaths) =>
+              (await database.createAttachmentCleanupJob(chatId, operation, filePaths)).id,
             log: (message) => {
               debugLogService.serverLog(message);
             },
-            markCleanupJobCompleted: (jobId) => {
-              database.markAttachmentCleanupJobCompleted(jobId);
+            markCleanupJobCompleted: async (jobId) => {
+              await database.markAttachmentCleanupJobCompleted(jobId);
             },
-            markCleanupJobFailed: (jobId, errorMessage) => {
-              database.markAttachmentCleanupJobFailed(jobId, errorMessage);
+            markCleanupJobFailed: async (jobId, errorMessage) => {
+              await database.markAttachmentCleanupJobFailed(jobId, errorMessage);
             },
-            markCleanupJobQueued: (jobId, errorMessage) => {
-              database.requeueAttachmentCleanupJob(jobId, errorMessage);
+            markCleanupJobQueued: async (jobId, errorMessage) => {
+              await database.requeueAttachmentCleanupJob(jobId, errorMessage);
             },
-            markCleanupJobRunning: (jobId) => {
-              database.markAttachmentCleanupJobRunning(jobId);
+            markCleanupJobRunning: async (jobId) => {
+              await database.markAttachmentCleanupJobRunning(jobId);
             },
             operation: "regenerate",
             removedMessages: result.removedMessages,
@@ -944,7 +983,10 @@ async function startServer(): Promise<void> {
       "/api/chats/:chatId/title": {
         PUT: async (request: RouteRequest<{ chatId: string }>) => {
           const body = (await readJsonObject(request)) as { title?: string };
-          const updatedChat = database.updateChatTitle(request.params.chatId, body.title ?? "");
+          const updatedChat = await database.updateChatTitle(
+            request.params.chatId,
+            body.title ?? "",
+          );
 
           if (!updatedChat) {
             return createErrorResponse(404, `Chat not found: ${request.params.chatId}`);
@@ -1048,7 +1090,7 @@ async function startServer(): Promise<void> {
               });
             }
 
-            const updatedChat = database.updateChatTitleIfMatch(
+            const updatedChat = await database.updateChatTitleIfMatch(
               request.params.chatId,
               "New chat",
               nextTitle,
@@ -1104,7 +1146,7 @@ async function startServer(): Promise<void> {
             return createErrorResponse(400, "System prompt presets require valid thinking tags.");
           }
 
-          const preset = database.createSystemPromptPreset(request.params.modelId, {
+          const preset = await database.createSystemPromptPreset(request.params.modelId, {
             ...(typeof body.jinjaTemplateOverride === "string"
               ? { jinjaTemplateOverride: body.jinjaTemplateOverride }
               : {}),
@@ -1139,7 +1181,7 @@ async function startServer(): Promise<void> {
             return createErrorResponse(400, "System prompt presets require valid thinking tags.");
           }
 
-          const preset = database.updateSystemPromptPreset(request.params.presetId, {
+          const preset = await database.updateSystemPromptPreset(request.params.presetId, {
             ...(typeof body.jinjaTemplateOverride === "string"
               ? { jinjaTemplateOverride: body.jinjaTemplateOverride }
               : {}),
@@ -1157,9 +1199,9 @@ async function startServer(): Promise<void> {
             preset,
           });
         },
-        DELETE: (request: RouteRequest<{ presetId: string }>) => {
+        DELETE: async (request: RouteRequest<{ presetId: string }>) => {
           assertTrustedWriteRequest(request);
-          const result = database.deleteSystemPromptPreset(request.params.presetId);
+          const result = await database.deleteSystemPromptPreset(request.params.presetId);
 
           if (!result.deleted && result.reason === "not_found") {
             return createErrorResponse(404, `Preset not found: ${request.params.presetId}`);
@@ -1178,9 +1220,9 @@ async function startServer(): Promise<void> {
         },
       },
       "/api/presets/system/item/:presetId/default": {
-        POST: (request: RouteRequest<{ presetId: string }>) => {
+        POST: async (request: RouteRequest<{ presetId: string }>) => {
           assertTrustedWriteRequest(request);
-          const preset = database.setDefaultSystemPromptPreset(request.params.presetId);
+          const preset = await database.setDefaultSystemPromptPreset(request.params.presetId);
 
           if (!preset) {
             return createErrorResponse(404, `Preset not found: ${request.params.presetId}`);
@@ -1218,7 +1260,7 @@ async function startServer(): Promise<void> {
             return createErrorResponse(400, loadSettingsError);
           }
 
-          const preset = database.createLoadInferencePreset(request.params.modelId, {
+          const preset = await database.createLoadInferencePreset(request.params.modelId, {
             name: body.name,
             settings: body.settings,
           });
@@ -1253,7 +1295,7 @@ async function startServer(): Promise<void> {
             return createErrorResponse(400, loadSettingsError);
           }
 
-          const preset = database.updateLoadInferencePreset(request.params.presetId, {
+          const preset = await database.updateLoadInferencePreset(request.params.presetId, {
             name: body.name,
             settings: body.settings,
           });
@@ -1267,9 +1309,9 @@ async function startServer(): Promise<void> {
             preset,
           });
         },
-        DELETE: (request: RouteRequest<{ presetId: string }>) => {
+        DELETE: async (request: RouteRequest<{ presetId: string }>) => {
           assertTrustedWriteRequest(request);
-          const result = database.deleteLoadInferencePreset(request.params.presetId);
+          const result = await database.deleteLoadInferencePreset(request.params.presetId);
 
           if (!result.deleted && result.reason === "not_found") {
             return createErrorResponse(404, `Preset not found: ${request.params.presetId}`);
@@ -1288,9 +1330,9 @@ async function startServer(): Promise<void> {
         },
       },
       "/api/presets/load/item/:presetId/default": {
-        POST: (request: RouteRequest<{ presetId: string }>) => {
+        POST: async (request: RouteRequest<{ presetId: string }>) => {
           assertTrustedWriteRequest(request);
-          const preset = database.setDefaultLoadInferencePreset(request.params.presetId);
+          const preset = await database.setDefaultLoadInferencePreset(request.params.presetId);
 
           if (!preset) {
             return createErrorResponse(404, `Preset not found: ${request.params.presetId}`);
@@ -1403,7 +1445,7 @@ async function startServer(): Promise<void> {
           } catch (error) {
             const pendingAttachmentIds = pendingAttachments.map((attachment) => attachment.id);
 
-            database.markPendingAttachmentsAbandoned(
+            await database.markPendingAttachmentsAbandoned(
               pendingAttachmentIds,
               error instanceof Error ? error.message : String(error),
             );
@@ -1609,6 +1651,19 @@ const handleShutdownSignal = async (signalName: string): Promise<void> => {
 
   shuttingDown = true;
   debugLogService.serverLog(`Received ${signalName}; shutting down.`);
+
+  // Notify connected SSE clients that the server is shutting down so the
+  // frontend can distinguish graceful shutdown from an ungraceful drop (S6).
+  try {
+    const shutdownSnapshot: RuntimeSnapshot = {
+      ...llamaServerManager.getSnapshot(),
+      status: "error",
+      lastError: `Server received ${signalName} and is shutting down.`,
+    };
+    runtimeBroadcaster.broadcast("runtime", shutdownSnapshot);
+  } catch {
+    // Best-effort; the server may already be partially torn down.
+  }
 
   let forcedBackendExitHandle: ReturnType<typeof setTimeout> | null = null;
   let shutdownExitCode = 0;

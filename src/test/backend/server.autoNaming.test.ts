@@ -40,10 +40,10 @@ describe("backend auto-naming diagnostics", () => {
       ]);
 
       const seedDatabase = new AppDatabase(applicationPaths);
-      const chat = seedDatabase.createChat();
+      const chat = await seedDatabase.createChat();
 
-      seedDatabase.appendMessage(chat.id, "user", "Summarize my first turn.");
-      seedDatabase.appendMessage(chat.id, "assistant", "Here is the first answer.");
+      await seedDatabase.appendMessage(chat.id, "user", "Summarize my first turn.");
+      await seedDatabase.appendMessage(chat.id, "assistant", "Here is the first answer.");
       seedDatabase.close();
 
       const port = await allocatePort();

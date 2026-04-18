@@ -18,7 +18,7 @@ import type {
 import type { ApplicationPaths } from "./paths";
 import {
   type SqliteBeginBlockedEvent,
-  runSqliteTransactionWithRetry,
+  runSqliteTransactionWithRetryAsync,
   type SqliteBusyRetryEvent,
   SQLITE_BUSY_TIMEOUT_MS,
 } from "./sqliteBusyRetry";
@@ -368,12 +368,12 @@ export class AppDatabase {
    * @param lastUsedModelId Optional last-used model hint.
    * @returns The created chat summary.
    */
-  public createChat(title?: string, lastUsedModelId?: string): ChatSummary {
+  public async createChat(title?: string, lastUsedModelId?: string): Promise<ChatSummary> {
     const chatId = crypto.randomUUID();
     const timestamp = new Date().toISOString();
     const nextTitle = title?.trim() || "New chat";
 
-    this.runInTransaction(() => {
+    await this.runInTransactionAsync(() => {
       this.database
         .query(
           "INSERT INTO chats (id, title, created_at, updated_at, last_used_model_id) VALUES (?, ?, ?, ?, ?)",
@@ -578,7 +578,7 @@ export class AppDatabase {
    * @returns The persisted message record.
    * @throws {ChatNotFoundError} When the parent chat no longer exists.
    */
-  public appendMessage(
+  public async appendMessage(
     chatId: string,
     role: ChatMessageRole,
     content: string,
@@ -588,15 +588,21 @@ export class AppDatabase {
     metadata: Record<string, unknown> = {},
     messageId: string = crypto.randomUUID(),
     committedPendingAttachments: MediaAttachmentRecord[] = [],
-  ): ChatMessageRecord {
+  ): Promise<ChatMessageRecord> {
     if (!this.chatExists(chatId)) {
       throw new ChatNotFoundError(chatId);
+    }
+
+    const existingMessage = this.getMessage(chatId, messageId);
+
+    if (existingMessage) {
+      return existingMessage;
     }
 
     let nextSequence = -1;
     const timestamp = new Date().toISOString();
 
-    this.runInTransaction(() => {
+    await this.runInTransactionAsync(() => {
       nextSequence = this.getNextSequenceNumber(chatId);
 
       this.database
@@ -650,11 +656,11 @@ export class AppDatabase {
    * @param metadata The next metadata payload.
    * @returns The updated message when found, otherwise `null`.
    */
-  public updateMessageMetadata(
+  public async updateMessageMetadata(
     chatId: string,
     messageId: string,
     metadata: Record<string, unknown>,
-  ): ChatMessageRecord | null {
+  ): Promise<ChatMessageRecord | null> {
     const existingMessage = this.getMessage(chatId, messageId);
 
     if (!existingMessage) {
@@ -663,12 +669,14 @@ export class AppDatabase {
 
     const timestamp = new Date().toISOString();
 
-    this.database
-      .query("UPDATE messages SET metadata_json = ? WHERE id = ? AND chat_id = ?")
-      .run(JSON.stringify(metadata), messageId, chatId);
+    await this.runInTransactionAsync(() => {
+      this.database
+        .query("UPDATE messages SET metadata_json = ? WHERE id = ? AND chat_id = ?")
+        .run(JSON.stringify(metadata), messageId, chatId);
 
-    this.touchChat(chatId, timestamp);
-    this.bumpRevision();
+      this.touchChat(chatId, timestamp);
+      this.bumpRevision();
+    });
 
     return this.getMessage(chatId, messageId);
   }
@@ -825,12 +833,15 @@ export class AppDatabase {
    *
    * @param attachments The committed attachment records as stored on the message.
    */
-  public markPendingAttachmentsCleanupFailed(attachmentIds: string[], errorMessage: string): void {
+  public async markPendingAttachmentsCleanupFailed(
+    attachmentIds: string[],
+    errorMessage: string,
+  ): Promise<void> {
     if (attachmentIds.length === 0) {
       return;
     }
 
-    this.runInTransaction(() => {
+    await this.runInTransactionAsync(() => {
       for (const attachmentId of attachmentIds) {
         this.database
           .query(
@@ -847,15 +858,15 @@ export class AppDatabase {
    * @param attachmentIds The lifecycle rows to mark abandoned.
    * @param errorMessage Optional descriptive reason for the transition.
    */
-  public markPendingAttachmentsAbandoned(
+  public async markPendingAttachmentsAbandoned(
     attachmentIds: string[],
     errorMessage: string | null = null,
-  ): void {
+  ): Promise<void> {
     if (attachmentIds.length === 0) {
       return;
     }
 
-    this.runInTransaction(() => {
+    await this.runInTransactionAsync(() => {
       for (const attachmentId of attachmentIds) {
         this.database
           .query("UPDATE pending_attachments SET state = 'abandoned', last_error = ? WHERE id = ?")
@@ -869,12 +880,12 @@ export class AppDatabase {
    *
    * @param attachmentIds The lifecycle rows that were successfully repaired.
    */
-  public markRecoveredPendingAttachments(attachmentIds: string[]): void {
+  public async markRecoveredPendingAttachments(attachmentIds: string[]): Promise<void> {
     if (attachmentIds.length === 0) {
       return;
     }
 
-    this.runInTransaction(() => {
+    await this.runInTransactionAsync(() => {
       for (const attachmentId of attachmentIds) {
         this.database
           .query(
@@ -893,19 +904,21 @@ export class AppDatabase {
    * @param filePaths The candidate attachment file paths to clean up.
    * @returns The persisted cleanup job record.
    */
-  public createAttachmentCleanupJob(
+  public async createAttachmentCleanupJob(
     chatId: string,
     operation: "append" | "edit" | "regenerate",
     filePaths: string[],
-  ): AttachmentCleanupJobRecord {
+  ): Promise<AttachmentCleanupJobRecord> {
     const jobId = crypto.randomUUID();
     const timestamp = new Date().toISOString();
 
-    this.database
-      .query(
-        "INSERT INTO attachment_cleanup_jobs (id, chat_id, operation, file_paths_json, state, attempt_count, last_error, created_at, updated_at) VALUES (?, ?, ?, ?, 'queued', 0, NULL, ?, ?)",
-      )
-      .run(jobId, chatId, operation, JSON.stringify(filePaths), timestamp, timestamp);
+    await this.runInTransactionAsync(() => {
+      this.database
+        .query(
+          "INSERT INTO attachment_cleanup_jobs (id, chat_id, operation, file_paths_json, state, attempt_count, last_error, created_at, updated_at) VALUES (?, ?, ?, ?, 'queued', 0, NULL, ?, ?)",
+        )
+        .run(jobId, chatId, operation, JSON.stringify(filePaths), timestamp, timestamp);
+    });
 
     return {
       attemptCount: 0,
@@ -921,47 +934,55 @@ export class AppDatabase {
   }
 
   /** Marks an attachment cleanup job as actively running and increments its attempt count. */
-  public markAttachmentCleanupJobRunning(jobId: string): void {
+  public async markAttachmentCleanupJobRunning(jobId: string): Promise<void> {
     const timestamp = new Date().toISOString();
 
-    this.database
-      .query(
-        "UPDATE attachment_cleanup_jobs SET state = 'running', attempt_count = attempt_count + 1, updated_at = ? WHERE id = ?",
-      )
-      .run(timestamp, jobId);
+    await this.runInTransactionAsync(() => {
+      this.database
+        .query(
+          "UPDATE attachment_cleanup_jobs SET state = 'running', attempt_count = attempt_count + 1, updated_at = ? WHERE id = ?",
+        )
+        .run(timestamp, jobId);
+    });
   }
 
   /** Marks an attachment cleanup job as successfully completed. */
-  public markAttachmentCleanupJobCompleted(jobId: string): void {
+  public async markAttachmentCleanupJobCompleted(jobId: string): Promise<void> {
     const timestamp = new Date().toISOString();
 
-    this.database
-      .query(
-        "UPDATE attachment_cleanup_jobs SET state = 'completed', last_error = NULL, updated_at = ? WHERE id = ?",
-      )
-      .run(timestamp, jobId);
+    await this.runInTransactionAsync(() => {
+      this.database
+        .query(
+          "UPDATE attachment_cleanup_jobs SET state = 'completed', last_error = NULL, updated_at = ? WHERE id = ?",
+        )
+        .run(timestamp, jobId);
+    });
   }
 
   /** Returns an attachment cleanup job to the queued state after a retryable failure. */
-  public requeueAttachmentCleanupJob(jobId: string, errorMessage: string): void {
+  public async requeueAttachmentCleanupJob(jobId: string, errorMessage: string): Promise<void> {
     const timestamp = new Date().toISOString();
 
-    this.database
-      .query(
-        "UPDATE attachment_cleanup_jobs SET state = 'queued', last_error = ?, updated_at = ? WHERE id = ?",
-      )
-      .run(errorMessage, timestamp, jobId);
+    await this.runInTransactionAsync(() => {
+      this.database
+        .query(
+          "UPDATE attachment_cleanup_jobs SET state = 'queued', last_error = ?, updated_at = ? WHERE id = ?",
+        )
+        .run(errorMessage, timestamp, jobId);
+    });
   }
 
   /** Marks an attachment cleanup job as terminally failed. */
-  public markAttachmentCleanupJobFailed(jobId: string, errorMessage: string): void {
+  public async markAttachmentCleanupJobFailed(jobId: string, errorMessage: string): Promise<void> {
     const timestamp = new Date().toISOString();
 
-    this.database
-      .query(
-        "UPDATE attachment_cleanup_jobs SET state = 'failed', last_error = ?, updated_at = ? WHERE id = ?",
-      )
-      .run(errorMessage, timestamp, jobId);
+    await this.runInTransactionAsync(() => {
+      this.database
+        .query(
+          "UPDATE attachment_cleanup_jobs SET state = 'failed', last_error = ?, updated_at = ? WHERE id = ?",
+        )
+        .run(errorMessage, timestamp, jobId);
+    });
   }
 
   /** Lists all tracked attachment cleanup jobs for diagnostics and tests. */
@@ -994,11 +1015,11 @@ export class AppDatabase {
    * @param nextContent The new textual content.
    * @returns The updated chat state and removed messages, otherwise `null` when not found.
    */
-  public replaceMessageAndTruncateFollowing(
+  public async replaceMessageAndTruncateFollowing(
     chatId: string,
     messageId: string,
     nextContent: string,
-  ): ChatMutationResult | null {
+  ): Promise<ChatMutationResult | null> {
     const existingMessage = this.getMessage(chatId, messageId);
 
     if (!existingMessage) {
@@ -1008,7 +1029,7 @@ export class AppDatabase {
     const removedMessages = this.listMessagesAfterSequence(chatId, existingMessage.sequence);
     const timestamp = new Date().toISOString();
 
-    this.runInTransaction(() => {
+    await this.runInTransactionAsync(() => {
       this.database
         .query(
           "UPDATE messages SET content = ?, reasoning_content = NULL, reasoning_truncated = 0, created_at = ? WHERE id = ? AND chat_id = ?",
@@ -1040,7 +1061,10 @@ export class AppDatabase {
    * @param messageId The first message to remove.
    * @returns The updated chat state and removed messages, otherwise `null` when not found.
    */
-  public truncateChatFromMessage(chatId: string, messageId: string): ChatMutationResult | null {
+  public async truncateChatFromMessage(
+    chatId: string,
+    messageId: string,
+  ): Promise<ChatMutationResult | null> {
     const existingMessage = this.getMessage(chatId, messageId);
 
     if (!existingMessage) {
@@ -1050,7 +1074,7 @@ export class AppDatabase {
     const removedMessages = this.listMessagesFromSequence(chatId, existingMessage.sequence);
     const timestamp = new Date().toISOString();
 
-    this.runInTransaction(() => {
+    await this.runInTransactionAsync(() => {
       this.database
         .query("DELETE FROM messages WHERE chat_id = ? AND sequence_number >= ?")
         .run(chatId, existingMessage.sequence);
@@ -1077,7 +1101,7 @@ export class AppDatabase {
    * @param title The next title value.
    * @returns The updated chat summary when found, otherwise `null`.
    */
-  public updateChatTitle(chatId: string, title: string): ChatSummary | null {
+  public async updateChatTitle(chatId: string, title: string): Promise<ChatSummary | null> {
     const nextTitle = title.trim();
 
     if (!nextTitle) {
@@ -1087,7 +1111,7 @@ export class AppDatabase {
     const timestamp = new Date().toISOString();
     let updated = false;
 
-    this.runInTransaction(() => {
+    await this.runInTransactionAsync(() => {
       const result = this.database
         .query("UPDATE chats SET title = ?, updated_at = ? WHERE id = ?")
         .run(nextTitle, timestamp, chatId);
@@ -1118,11 +1142,11 @@ export class AppDatabase {
    * @param nextTitle The new title to set.
    * @returns The updated chat summary when the conditional update succeeded, otherwise `null`.
    */
-  public updateChatTitleIfMatch(
+  public async updateChatTitleIfMatch(
     chatId: string,
     expectedCurrentTitle: string,
     nextTitle: string,
-  ): ChatSummary | null {
+  ): Promise<ChatSummary | null> {
     const sanitizedTitle = nextTitle.trim();
 
     if (!sanitizedTitle) {
@@ -1132,7 +1156,7 @@ export class AppDatabase {
     const timestamp = new Date().toISOString();
     let updated = false;
 
-    this.runInTransaction(() => {
+    await this.runInTransactionAsync(() => {
       const result = this.database
         .query("UPDATE chats SET title = ?, updated_at = ? WHERE id = ? AND title = ?")
         .run(sanitizedTitle, timestamp, chatId, expectedCurrentTitle);
@@ -1159,10 +1183,10 @@ export class AppDatabase {
    * @param chatId The chat identifier.
    * @returns `true` when a chat row was deleted.
    */
-  public deleteChat(chatId: string): boolean {
+  public async deleteChat(chatId: string): Promise<boolean> {
     let deleted = false;
 
-    this.runInTransaction(() => {
+    await this.runInTransactionAsync(() => {
       const result = this.database.query("DELETE FROM chats WHERE id = ?").run(chatId);
 
       if (result.changes === 0) {
@@ -1182,12 +1206,12 @@ export class AppDatabase {
    *
    * @returns The list of deleted chat IDs so the caller can clean up media files.
    */
-  public deleteAllChats(): string[] {
+  public async deleteAllChats(): Promise<string[]> {
     const rows = this.database.query("SELECT id FROM chats").all() as Array<{ id: string }>;
     const chatIds = rows.map((row) => row.id);
 
     if (chatIds.length > 0) {
-      this.runInTransaction(() => {
+      await this.runInTransactionAsync(() => {
         this.database.query("DELETE FROM chats").run();
         this.database.query("DELETE FROM chat_search_fts").run();
         this.bumpRevision();
@@ -1296,7 +1320,7 @@ export class AppDatabase {
   /**
    * Creates a new system-prompt preset for a model.
    */
-  public createSystemPromptPreset(
+  public async createSystemPromptPreset(
     modelId: string,
     input: {
       jinjaTemplateOverride?: string;
@@ -1304,12 +1328,12 @@ export class AppDatabase {
       systemPrompt: string;
       thinkingTags: ThinkingTagSettings;
     },
-  ): SystemPromptPreset {
+  ): Promise<SystemPromptPreset> {
     const presetId = crypto.randomUUID();
     const timestamp = new Date().toISOString();
     const nextIsDefault = this.listSystemPromptPresets(modelId).length === 0;
 
-    this.runInTransaction(() => {
+    await this.runInTransactionAsync(() => {
       this.database
         .query(
           "INSERT INTO system_prompt_presets (id, model_id, name, system_prompt, jinja_template_override, thinking_start_tag, thinking_end_tag, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1336,7 +1360,7 @@ export class AppDatabase {
   /**
    * Updates an existing system-prompt preset.
    */
-  public updateSystemPromptPreset(
+  public async updateSystemPromptPreset(
     presetId: string,
     input: {
       jinjaTemplateOverride?: string;
@@ -1344,7 +1368,7 @@ export class AppDatabase {
       systemPrompt: string;
       thinkingTags: ThinkingTagSettings;
     },
-  ): SystemPromptPreset | null {
+  ): Promise<SystemPromptPreset | null> {
     const existingPreset = this.getSystemPromptPreset(presetId);
 
     if (!existingPreset) {
@@ -1353,21 +1377,23 @@ export class AppDatabase {
 
     const timestamp = new Date().toISOString();
 
-    this.database
-      .query(
-        "UPDATE system_prompt_presets SET name = ?, system_prompt = ?, jinja_template_override = ?, thinking_start_tag = ?, thinking_end_tag = ?, updated_at = ? WHERE id = ?",
-      )
-      .run(
-        input.name.trim(),
-        input.systemPrompt,
-        input.jinjaTemplateOverride?.trim() ? input.jinjaTemplateOverride.trim() : null,
-        input.thinkingTags.startString,
-        input.thinkingTags.endString,
-        timestamp,
-        presetId,
-      );
+    await this.runInTransactionAsync(() => {
+      this.database
+        .query(
+          "UPDATE system_prompt_presets SET name = ?, system_prompt = ?, jinja_template_override = ?, thinking_start_tag = ?, thinking_end_tag = ?, updated_at = ? WHERE id = ?",
+        )
+        .run(
+          input.name.trim(),
+          input.systemPrompt,
+          input.jinjaTemplateOverride?.trim() ? input.jinjaTemplateOverride.trim() : null,
+          input.thinkingTags.startString,
+          input.thinkingTags.endString,
+          timestamp,
+          presetId,
+        );
 
-    this.bumpRevision();
+      this.bumpRevision();
+    });
 
     return this.getSystemPromptPreset(presetId);
   }
@@ -1375,7 +1401,7 @@ export class AppDatabase {
   /**
    * Deletes a system-prompt preset while preserving at least one preset per model.
    */
-  public deleteSystemPromptPreset(presetId: string): DeletePresetResult {
+  public async deleteSystemPromptPreset(presetId: string): Promise<DeletePresetResult> {
     const existingPreset = this.getSystemPromptPreset(presetId);
 
     if (!existingPreset) {
@@ -1397,7 +1423,7 @@ export class AppDatabase {
 
     let promotedDefaultId: string | undefined;
 
-    this.runInTransaction(() => {
+    await this.runInTransactionAsync(() => {
       this.database.query("DELETE FROM system_prompt_presets WHERE id = ?").run(presetId);
 
       if (existingPreset.isDefault) {
@@ -1424,14 +1450,14 @@ export class AppDatabase {
   /**
    * Marks a system-prompt preset as the default for its model.
    */
-  public setDefaultSystemPromptPreset(presetId: string): SystemPromptPreset | null {
+  public async setDefaultSystemPromptPreset(presetId: string): Promise<SystemPromptPreset | null> {
     const existingPreset = this.getSystemPromptPreset(presetId);
 
     if (!existingPreset) {
       return null;
     }
 
-    this.runInTransaction(() => {
+    await this.runInTransactionAsync(() => {
       this.database
         .query("UPDATE system_prompt_presets SET is_default = 0 WHERE model_id = ?")
         .run(existingPreset.modelId);
@@ -1447,18 +1473,18 @@ export class AppDatabase {
   /**
    * Creates a new load and inference preset for a model.
    */
-  public createLoadInferencePreset(
+  public async createLoadInferencePreset(
     modelId: string,
     input: {
       name: string;
       settings: LoadInferenceSettings;
     },
-  ): LoadInferencePreset {
+  ): Promise<LoadInferencePreset> {
     const presetId = crypto.randomUUID();
     const timestamp = new Date().toISOString();
     const nextIsDefault = this.listLoadInferencePresets(modelId).length === 0;
 
-    this.runInTransaction(() => {
+    await this.runInTransactionAsync(() => {
       this.database
         .query(
           "INSERT INTO load_inference_presets (id, model_id, name, settings_json, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -1482,26 +1508,28 @@ export class AppDatabase {
   /**
    * Updates an existing load and inference preset.
    */
-  public updateLoadInferencePreset(
+  public async updateLoadInferencePreset(
     presetId: string,
     input: {
       name: string;
       settings: LoadInferenceSettings;
     },
-  ): LoadInferencePreset | null {
+  ): Promise<LoadInferencePreset | null> {
     const existingPreset = this.getLoadInferencePreset(presetId);
 
     if (!existingPreset) {
       return null;
     }
 
-    this.database
-      .query(
-        "UPDATE load_inference_presets SET name = ?, settings_json = ?, updated_at = ? WHERE id = ?",
-      )
-      .run(input.name.trim(), JSON.stringify(input.settings), new Date().toISOString(), presetId);
+    await this.runInTransactionAsync(() => {
+      this.database
+        .query(
+          "UPDATE load_inference_presets SET name = ?, settings_json = ?, updated_at = ? WHERE id = ?",
+        )
+        .run(input.name.trim(), JSON.stringify(input.settings), new Date().toISOString(), presetId);
 
-    this.bumpRevision();
+      this.bumpRevision();
+    });
 
     return this.getLoadInferencePreset(presetId);
   }
@@ -1509,7 +1537,7 @@ export class AppDatabase {
   /**
    * Deletes a load and inference preset while preserving at least one preset per model.
    */
-  public deleteLoadInferencePreset(presetId: string): DeletePresetResult {
+  public async deleteLoadInferencePreset(presetId: string): Promise<DeletePresetResult> {
     const existingPreset = this.getLoadInferencePreset(presetId);
 
     if (!existingPreset) {
@@ -1531,7 +1559,7 @@ export class AppDatabase {
 
     let promotedDefaultId: string | undefined;
 
-    this.runInTransaction(() => {
+    await this.runInTransactionAsync(() => {
       this.database.query("DELETE FROM load_inference_presets WHERE id = ?").run(presetId);
 
       if (existingPreset.isDefault) {
@@ -1558,14 +1586,17 @@ export class AppDatabase {
   /**
    * Marks a load and inference preset as the default for its model.
    */
-  public setDefaultLoadInferencePreset(presetId: string): LoadInferencePreset | null {
+
+  public async setDefaultLoadInferencePreset(
+    presetId: string,
+  ): Promise<LoadInferencePreset | null> {
     const existingPreset = this.getLoadInferencePreset(presetId);
 
     if (!existingPreset) {
       return null;
     }
 
-    this.runInTransaction(() => {
+    await this.runInTransactionAsync(() => {
       this.database
         .query("UPDATE load_inference_presets SET is_default = 0 WHERE model_id = ?")
         .run(existingPreset.modelId);
@@ -1821,7 +1852,7 @@ export class AppDatabase {
   }
 
   /** Repairs the derived attachment lookup table for upgraded databases. */
-  private ensureMessageAttachmentIndex(): void {
+  private async ensureMessageAttachmentIndex(): Promise<void> {
     const versionRow = this.database
       .query("SELECT value FROM meta WHERE key = 'attachment_index_version'")
       .get() as { value: string } | null;
@@ -1830,7 +1861,7 @@ export class AppDatabase {
       return;
     }
 
-    this.runInTransaction(() => {
+    await this.runInTransactionAsync(() => {
       this.rebuildEntireAttachmentIndex();
       this.database
         .query("INSERT OR REPLACE INTO meta (key, value) VALUES ('attachment_index_version', ?)")
@@ -1847,8 +1878,8 @@ export class AppDatabase {
     }
 
     try {
-      this.ensureMessageAttachmentIndex();
-      this.ensureSearchIndexVersion();
+      await this.ensureMessageAttachmentIndex();
+      await this.ensureSearchIndexVersion();
     } catch (error) {
       if (this.isClosed && error instanceof Error && error.message.includes("closed database")) {
         return;
@@ -1859,7 +1890,7 @@ export class AppDatabase {
   }
 
   /** Repairs legacy search-index contents when the derived schema changes. */
-  private ensureSearchIndexVersion(): void {
+  private async ensureSearchIndexVersion(): Promise<void> {
     const versionRow = this.database
       .query("SELECT value FROM meta WHERE key = 'search_index_version'")
       .get() as { value: string } | null;
@@ -1868,7 +1899,7 @@ export class AppDatabase {
       return;
     }
 
-    this.runInTransaction(() => {
+    await this.runInTransactionAsync(() => {
       this.rebuildEntireSearchIndex();
       this.database
         .query("INSERT OR REPLACE INTO meta (key, value) VALUES ('search_index_version', ?)")
@@ -1989,8 +2020,8 @@ export class AppDatabase {
       .run(chatId, content, reasoningContent);
   }
 
-  /** Runs a callback inside a write transaction and rolls back on failure. */
-  private runInTransaction<T>(callback: () => T): T {
+  /** Runs a callback inside a write transaction and yields the thread on lock retries. */
+  private async runInTransactionAsync<T>(callback: () => T): Promise<T> {
     const retryOptions = {
       begin: () => {
         this.database.exec("BEGIN IMMEDIATE");
@@ -2008,7 +2039,7 @@ export class AppDatabase {
       ...(this.options.onSqliteBusyRetry ? { onBusyRetry: this.options.onSqliteBusyRetry } : {}),
     };
 
-    return runSqliteTransactionWithRetry(retryOptions);
+    return await runSqliteTransactionWithRetryAsync(retryOptions);
   }
 
   /** Records committed attachment lifecycle state inside the surrounding write transaction. */

@@ -33,7 +33,7 @@ async function main(): Promise<void> {
   const startedAt = Date.now();
 
   try {
-    const message = database.appendMessage(chatId, "user", "contended write");
+    const message = await database.appendMessage(chatId, "user", "contended write");
 
     process.stdout.write(
       JSON.stringify({

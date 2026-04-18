@@ -83,7 +83,7 @@ export async function branchChatAtMessage(
     return null;
   }
 
-  const nextChat = database.createChat(
+  const nextChat = await database.createChat(
     buildBranchedChatTitle(
       sourceChat.chat.title,
       database.listChats().map((chat) => chat.title),
@@ -102,7 +102,7 @@ export async function branchChatAtMessage(
       message.mediaAttachments,
     );
 
-    database.appendMessage(
+    await database.appendMessage(
       nextChat.id,
       message.role,
       message.content,

@@ -240,6 +240,18 @@ export const useModelStore = create<ModelStoreState>((set, get) => ({
         getTools(),
       ]);
 
+      // Force a full page reload when the backend has restarted with a different
+      // build ID, preventing stale JS chunk references after binary upgrades (S2).
+      if (
+        configResponse.buildId &&
+        uiCache.lastBuildId &&
+        configResponse.buildId !== uiCache.lastBuildId
+      ) {
+        await writeUiCacheBestEffort({ lastBuildId: configResponse.buildId });
+        window.location.reload();
+        return;
+      }
+
       const normalizedUiCache = await invalidateUiCacheForRevisionBestEffort(
         uiCache,
         modelResponse.dbRevision,
@@ -248,6 +260,7 @@ export const useModelStore = create<ModelStoreState>((set, get) => ({
         {
           cachedModels: modelResponse.models,
           dbRevision: modelResponse.dbRevision,
+          lastBuildId: configResponse.buildId ?? uiCache.lastBuildId,
         },
         {
           currentCache: normalizedUiCache,
@@ -372,6 +385,11 @@ export const useModelStore = create<ModelStoreState>((set, get) => ({
     }));
   },
   loadModel: async (modelId) => {
+    if (get().presetsSaving) {
+      set({ error: "Cannot load a model while presets are being saved. Please wait." });
+      return;
+    }
+
     const operationToken = beginRuntimeOperation(set);
 
     try {
@@ -617,20 +635,48 @@ export const useModelStore = create<ModelStoreState>((set, get) => ({
 
     try {
       await configSaveQueue.enqueue(async () => {
+        let currentUpdate = update;
+        let attempt = 0;
+
         try {
-          const configResponse = await updateConfig(update);
+          while (attempt < 3) {
+            attempt += 1;
+            const configResponse = await updateConfig(currentUpdate, get().config?.configRevision);
 
-          set({
-            config: configResponse.config,
-            error: configResponse.warning ?? null,
-          });
+            if (configResponse.error) {
+              set({ config: configResponse.config });
 
-          if (typeof update.modelsPath === "string") {
-            await get().refreshModels();
+              currentUpdate = {
+                ...currentUpdate,
+                customBinaries:
+                  currentUpdate.customBinaries ?? configResponse.config.customBinaries,
+                debug: {
+                  ...configResponse.config.debug,
+                  ...currentUpdate.debug,
+                },
+              };
+
+              continue;
+            }
+
+            set({
+              config: configResponse.config,
+              error: configResponse.warning ?? null,
+            });
+
+            if (typeof update.modelsPath === "string") {
+              await get().refreshModels();
+            }
+
+            if (update.toolEnabledStates) {
+              await get().refreshTools();
+            }
+
+            break;
           }
 
-          if (update.toolEnabledStates) {
-            await get().refreshTools();
+          if (attempt >= 3) {
+            throw new Error("Failed to save configuration after multiple concurrent updates.");
           }
         } finally {
           set({ savingConfig: configSaveQueue.hasPendingTasks() });
@@ -741,6 +787,25 @@ function establishRuntimeStreamSubscription(
       },
       onOpen: () => {
         setState({ runtimeStreamWarning: null });
+
+        // Fetch the current runtime snapshot on every SSE connect/reconnect to
+        // ensure the frontend state is consistent even when the ring buffer has
+        // cycled past critical events during a disconnect (C1 remediation).
+        void safeGetRuntimeSnapshot().then((runtimeSnapshot) => {
+          if (
+            runtimeSnapshot &&
+            shouldReplaceRuntimeSnapshot(getState().runtime, runtimeSnapshot)
+          ) {
+            setState({
+              runtime: runtimeSnapshot,
+              runtimeLoadFailure:
+                runtimeSnapshot.status === "idle" || runtimeSnapshot.status === "ready"
+                  ? null
+                  : getState().runtimeLoadFailure,
+              selectedModelId: runtimeSnapshot.activeModelId ?? getState().selectedModelId,
+            });
+          }
+        });
       },
       reconnect: {
         initialDelayMs: 1_500,

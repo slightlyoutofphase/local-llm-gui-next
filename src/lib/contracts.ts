@@ -143,6 +143,8 @@ export interface AppConfig {
   toolEnabledStates: Record<string, boolean>;
   /** Debug window collection and filtering defaults. */
   debug: DebugLogSettings;
+  /** Monotonically increasing revision to detect concurrent cross-tab updates. */
+  configRevision?: number;
 }
 
 /**

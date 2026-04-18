@@ -22,6 +22,9 @@ export interface JsonSseBroadcasterOptions {
   bufferWhenDisconnected: boolean;
 }
 
+/** Interval in milliseconds between SSE heartbeat comments to keep connections alive. */
+const SSE_HEARTBEAT_INTERVAL_MS = 30_000;
+
 /**
  * Broadcasts JSON SSE events to zero or more connected clients.
  *
@@ -56,7 +59,16 @@ export class JsonSseBroadcaster<T> {
       new ReadableStream<Uint8Array>({
         start: (controller) => {
           const subscriptionId = crypto.randomUUID();
+          const heartbeatInterval = setInterval(() => {
+            try {
+              controller.enqueue(this.encoder.encode(": ping\n\n"));
+            } catch {
+              clearInterval(heartbeatInterval);
+            }
+          }, SSE_HEARTBEAT_INTERVAL_MS);
+
           const cleanup = (): void => {
+            clearInterval(heartbeatInterval);
             this.subscribers.delete(subscriptionId);
             controller.close();
           };

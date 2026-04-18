@@ -44,7 +44,7 @@ describe("cleanupFinalizedPendingAttachments", () => {
 
     await cleanupFinalizedPendingAttachments({
       chatId: "chat-1",
-      createCleanupJob: () => {
+      createCleanupJob: async () => {
         createdCleanupJob = true;
         return "job-1";
       },
@@ -54,11 +54,11 @@ describe("cleanupFinalizedPendingAttachments", () => {
       log: (message) => {
         logMessages.push(message);
       },
-      markCleanupJobCompleted: () => {},
-      markCleanupJobFailed: () => {},
-      markCleanupJobQueued: () => {},
-      markCleanupJobRunning: () => {},
-      markPendingAttachmentsCleanupFailed: (attachmentIds, errorMessage) => {
+      markCleanupJobCompleted: async () => {},
+      markCleanupJobFailed: async () => {},
+      markCleanupJobQueued: async () => {},
+      markCleanupJobRunning: async () => {},
+      markPendingAttachmentsCleanupFailed: async (attachmentIds, errorMessage) => {
         markedCleanupFailed = { attachmentIds, errorMessage };
       },
       messageId: "message-1",
@@ -88,7 +88,7 @@ describe("cleanupFinalizedPendingAttachments", () => {
 
     await cleanupFinalizedPendingAttachments({
       chatId: "chat-1",
-      createCleanupJob: (chatId, operation, filePaths) => {
+      createCleanupJob: async (chatId, operation, filePaths) => {
         createdJobs.push({ chatId, filePaths, operation });
         return "job-1";
       },
@@ -99,19 +99,19 @@ describe("cleanupFinalizedPendingAttachments", () => {
       log: (message) => {
         logMessages.push(message);
       },
-      markCleanupJobCompleted: (jobId) => {
+      markCleanupJobCompleted: async (jobId) => {
         completedJobIds.push(jobId);
       },
-      markCleanupJobFailed: (jobId, errorMessage) => {
+      markCleanupJobFailed: async (jobId, errorMessage) => {
         failedJobs.push({ jobId, errorMessage });
       },
-      markCleanupJobQueued: (jobId, errorMessage) => {
+      markCleanupJobQueued: async (jobId, errorMessage) => {
         queuedJobs.push({ jobId, errorMessage });
       },
-      markCleanupJobRunning: (jobId) => {
+      markCleanupJobRunning: async (jobId) => {
         runningJobIds.push(jobId);
       },
-      markPendingAttachmentsCleanupFailed: (attachmentIds, errorMessage) => {
+      markPendingAttachmentsCleanupFailed: async (attachmentIds, errorMessage) => {
         cleanupFailedUpdates.push({ attachmentIds, errorMessage });
       },
       messageId: "message-1",
@@ -162,22 +162,22 @@ describe("cleanupFinalizedPendingAttachments", () => {
 
     await cleanupFinalizedPendingAttachments({
       chatId: "chat-1",
-      createCleanupJob: () => "job-1",
+      createCleanupJob: async () => "job-1",
       deletePendingAttachmentFiles: async () => {
         throw new Error("disk busy");
       },
       log: (message) => {
         logMessages.push(message);
       },
-      markCleanupJobCompleted: () => {},
-      markCleanupJobFailed: () => {},
-      markCleanupJobQueued: (jobId, errorMessage) => {
+      markCleanupJobCompleted: async () => {},
+      markCleanupJobFailed: async () => {},
+      markCleanupJobQueued: async (jobId, errorMessage) => {
         queuedJobs.push({ jobId, errorMessage });
       },
-      markCleanupJobRunning: (jobId) => {
+      markCleanupJobRunning: async (jobId) => {
         runningJobIds.push(jobId);
       },
-      markPendingAttachmentsCleanupFailed: () => {
+      markPendingAttachmentsCleanupFailed: async () => {
         throw new Error("database locked");
       },
       messageId: "message-1",
@@ -221,23 +221,23 @@ describe("cleanupFinalizedPendingAttachments", () => {
       cleanupRemovedMessageAttachments: async (messages) => {
         cleanedMessageIds.push(messages.map((message) => message.id));
       },
-      createCleanupJob: (chatId, operation, filePaths) => {
+      createCleanupJob: async (chatId, operation, filePaths) => {
         createdJobs.push({ chatId, filePaths, operation });
         return "job-1";
       },
       log: (message) => {
         logMessages.push(message);
       },
-      markCleanupJobCompleted: (jobId) => {
+      markCleanupJobCompleted: async (jobId) => {
         completedJobIds.push(jobId);
       },
-      markCleanupJobFailed: (jobId, errorMessage) => {
+      markCleanupJobFailed: async (jobId, errorMessage) => {
         failedJobs.push({ jobId, errorMessage });
       },
-      markCleanupJobQueued: (jobId, errorMessage) => {
+      markCleanupJobQueued: async (jobId, errorMessage) => {
         queuedJobs.push({ jobId, errorMessage });
       },
-      markCleanupJobRunning: (jobId) => {
+      markCleanupJobRunning: async (jobId) => {
         runningJobIds.push(jobId);
       },
       operation: "edit",
@@ -272,20 +272,20 @@ describe("cleanupFinalizedPendingAttachments", () => {
         cleanupAttempts += 1;
         throw new Error("permission denied");
       },
-      createCleanupJob: () => "job-1",
+      createCleanupJob: async () => "job-1",
       log: (message) => {
         logMessages.push(message);
       },
-      markCleanupJobCompleted: () => {
+      markCleanupJobCompleted: async () => {
         throw new Error("unexpected complete");
       },
-      markCleanupJobFailed: (jobId, errorMessage) => {
+      markCleanupJobFailed: async (jobId, errorMessage) => {
         failedJobs.push({ jobId, errorMessage });
       },
-      markCleanupJobQueued: (jobId, errorMessage) => {
+      markCleanupJobQueued: async (jobId, errorMessage) => {
         queuedJobs.push({ jobId, errorMessage });
       },
-      markCleanupJobRunning: (jobId) => {
+      markCleanupJobRunning: async (jobId) => {
         runningJobIds.push(jobId);
       },
       operation: "edit",

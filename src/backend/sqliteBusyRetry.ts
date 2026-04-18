@@ -27,6 +27,13 @@ interface SqliteTransactionRetryOptions<T> {
   sleep?: (delayMs: number) => void;
 }
 
+export interface SqliteTransactionRetryAsyncOptions<T> extends Omit<
+  SqliteTransactionRetryOptions<T>,
+  "sleep"
+> {
+  sleep?: (delayMs: number) => Promise<void>;
+}
+
 /**
  * Retries write-transaction lock acquisition when SQLite reports a busy database.
  */
@@ -79,6 +86,63 @@ export function runSqliteTransactionWithRetry<T>(options: SqliteTransactionRetry
   }
 }
 
+/**
+ * Asynchronously retries write-transaction lock acquisition when SQLite reports a busy database,
+ * yielding the main event loop to other concurrent tasks without blocking it.
+ */
+export async function runSqliteTransactionWithRetryAsync<T>(
+  options: SqliteTransactionRetryAsyncOptions<T>,
+): Promise<T> {
+  let attempt = 0;
+
+  while (true) {
+    const beginStartedAt = Date.now();
+
+    try {
+      options.begin();
+
+      const beginElapsedMs = Date.now() - beginStartedAt;
+
+      if (beginElapsedMs >= SQLITE_LOCK_PRESSURE_BEGIN_THRESHOLD_MS) {
+        options.onBeginBlocked?.({
+          attempt: attempt + 1,
+          elapsedMs: beginElapsedMs,
+          maxRetries: SQLITE_BUSY_MAX_RETRIES,
+        });
+      }
+
+      break;
+    } catch (error) {
+      if (!isSqliteBusyError(error) || attempt >= SQLITE_BUSY_MAX_RETRIES) {
+        throw error;
+      }
+
+      const delayMs = getSqliteBusyRetryDelayMs(attempt);
+
+      options.onBusyRetry?.({
+        attempt: attempt + 1,
+        delayMs,
+        maxRetries: SQLITE_BUSY_MAX_RETRIES,
+      });
+      await (options.sleep ?? sleepSqliteBusyRetryDelayAsync)(delayMs);
+      attempt += 1;
+    }
+  }
+
+  // Once safely acquired, the internal execute() block must remain fully
+  // synchronous so the transaction is bounded correctly on this connection.
+  try {
+    const result = options.execute();
+
+    options.commit();
+
+    return result;
+  } catch (error) {
+    options.rollback();
+    throw error;
+  }
+}
+
 export function getSqliteBusyRetryDelayMs(attempt: number): number {
   return SQLITE_BUSY_RETRY_BASE_DELAY_MS * 2 ** attempt;
 }
@@ -116,4 +180,12 @@ function sleepSqliteBusyRetryDelay(delayMs: number): void {
   }
 
   Atomics.wait(SQLITE_BUSY_SLEEP_SIGNAL, 0, 0, delayMs);
+}
+
+function sleepSqliteBusyRetryDelayAsync(delayMs: number): Promise<void> {
+  if (delayMs <= 0) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
 }

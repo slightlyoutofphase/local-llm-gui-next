@@ -41,7 +41,7 @@ export async function sweepStartupAttachmentCleanupJobs(
 
     if (remainingAttempts <= 0) {
       try {
-        options.database.markAttachmentCleanupJobFailed(
+        await options.database.markAttachmentCleanupJobFailed(
           job.id,
           job.lastError ?? "cleanup job exceeded retry budget before startup recovery",
         );
@@ -59,17 +59,17 @@ export async function sweepStartupAttachmentCleanupJobs(
       cleanupJobId: job.id,
       filePaths: job.filePaths,
       log: options.log,
-      markCleanupJobCompleted: (jobId) => {
-        options.database.markAttachmentCleanupJobCompleted(jobId);
+      markCleanupJobCompleted: async (jobId) => {
+        await options.database.markAttachmentCleanupJobCompleted(jobId);
       },
-      markCleanupJobFailed: (jobId, errorMessage) => {
-        options.database.markAttachmentCleanupJobFailed(jobId, errorMessage);
+      markCleanupJobFailed: async (jobId, errorMessage) => {
+        await options.database.markAttachmentCleanupJobFailed(jobId, errorMessage);
       },
-      markCleanupJobQueued: (jobId, errorMessage) => {
-        options.database.requeueAttachmentCleanupJob(jobId, errorMessage);
+      markCleanupJobQueued: async (jobId, errorMessage) => {
+        await options.database.requeueAttachmentCleanupJob(jobId, errorMessage);
       },
-      markCleanupJobRunning: (jobId) => {
-        options.database.markAttachmentCleanupJobRunning(jobId);
+      markCleanupJobRunning: async (jobId) => {
+        await options.database.markAttachmentCleanupJobRunning(jobId);
       },
       maxAttempts: remainingAttempts,
       operation: job.operation,
@@ -136,7 +136,7 @@ export async function sweepStartupPendingAttachments(
 
   if (recoveredIds.length > 0) {
     try {
-      options.database.markRecoveredPendingAttachments(recoveredIds);
+      await options.database.markRecoveredPendingAttachments(recoveredIds);
     } catch (error) {
       options.log(
         `Failed to update ${String(recoveredIds.length)} stale pending attachment lifecycle record(s) during startup cleanup: ${formatStartupCleanupError(error)}`,

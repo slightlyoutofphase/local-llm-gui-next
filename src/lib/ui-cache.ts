@@ -24,12 +24,15 @@ export interface UiCacheState {
   lastChatId: string | null;
   /** Whether the debug panel was open on the last page unload. */
   debugPanelOpen: boolean;
+  /** The server process build identifier from the last successful hydration. */
+  lastBuildId: string | null;
 }
 
 const DEFAULT_UI_CACHE_STATE: UiCacheState = {
   dbRevision: 0,
   cachedModels: [],
   debugPanelOpen: false,
+  lastBuildId: null,
   lastChatId: null,
 };
 
@@ -49,6 +52,8 @@ export async function readUiCache(): Promise<UiCacheState> {
   return normalizeUiCacheState(storedValue);
 }
 
+let sessionFallbackCache: UiCacheState | null = null;
+
 /**
  * Reads the persisted UI cache, falling back to the discardable default snapshot when storage
  * access is blocked or unavailable.
@@ -59,7 +64,7 @@ export async function readUiCacheBestEffort(
   try {
     return await readCache();
   } catch {
-    return DEFAULT_UI_CACHE_STATE;
+    return sessionFallbackCache ?? DEFAULT_UI_CACHE_STATE;
   }
 }
 
@@ -92,6 +97,7 @@ export async function writeUiCacheBestEffort(
 
     return persistedCache;
   } catch {
+    sessionFallbackCache = nextCache;
     (options.notifyCache ?? broadcastUiCacheSync)(nextCache);
     return nextCache;
   }

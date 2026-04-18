@@ -18,9 +18,9 @@ describe("chat history mutations", () => {
     const harness = await createHarness();
 
     try {
-      const chat = harness.database.createChat("Edit me");
-      const initialUser = harness.database.appendMessage(chat.id, "user", "Original prompt");
-      harness.database.appendMessage(chat.id, "assistant", "Original answer");
+      const chat = await harness.database.createChat("Edit me");
+      const initialUser = await harness.database.appendMessage(chat.id, "user", "Original prompt");
+      await harness.database.appendMessage(chat.id, "assistant", "Original answer");
       const removedAttachment = await createAttachment(
         harness.applicationPaths,
         chat.id,
@@ -32,10 +32,10 @@ describe("chat history mutations", () => {
         buildBinaryAttachmentReplayDescriptor(removedAttachment, Buffer.from("test-data", "utf8")),
       );
 
-      harness.database.appendMessage(chat.id, "user", "Later follow up", [removedAttachment]);
-      harness.database.appendMessage(chat.id, "assistant", "Later answer");
+      await harness.database.appendMessage(chat.id, "user", "Later follow up", [removedAttachment]);
+      await harness.database.appendMessage(chat.id, "assistant", "Later answer");
 
-      const result = harness.database.replaceMessageAndTruncateFollowing(
+      const result = await harness.database.replaceMessageAndTruncateFollowing(
         chat.id,
         initialUser.id,
         "Edited prompt",
@@ -62,7 +62,7 @@ describe("chat history mutations", () => {
     const harness = await createHarness();
 
     try {
-      const chat = harness.database.createChat("Branch me");
+      const chat = await harness.database.createChat("Branch me");
       const sourceAttachment = await createAttachment(
         harness.applicationPaths,
         chat.id,
@@ -70,8 +70,14 @@ describe("chat history mutations", () => {
         "image.png",
       );
 
-      harness.database.appendMessage(chat.id, "user", "Analyze this image", [sourceAttachment]);
-      const assistantMessage = harness.database.appendMessage(chat.id, "assistant", "Looks good.");
+      await harness.database.appendMessage(chat.id, "user", "Analyze this image", [
+        sourceAttachment,
+      ]);
+      const assistantMessage = await harness.database.appendMessage(
+        chat.id,
+        "assistant",
+        "Looks good.",
+      );
       const branch = await branchChatAtMessage(
         harness.applicationPaths,
         harness.database,
@@ -101,11 +107,11 @@ describe("chat history mutations", () => {
     const harness = await createHarness();
 
     try {
-      harness.database.createChat("Branch me (branch)");
-      harness.database.createChat("Branch me (branch 2)");
+      await harness.database.createChat("Branch me (branch)");
+      await harness.database.createChat("Branch me (branch 2)");
 
-      const chat = harness.database.createChat("Branch me (branch)");
-      const userMessage = harness.database.appendMessage(chat.id, "user", "Hello");
+      const chat = await harness.database.createChat("Branch me (branch)");
+      const userMessage = await harness.database.appendMessage(chat.id, "user", "Hello");
 
       const branch = await branchChatAtMessage(
         harness.applicationPaths,
@@ -125,7 +131,7 @@ describe("chat history mutations", () => {
     const harness = await createHarness();
 
     try {
-      const chat = harness.database.createChat("Shared media");
+      const chat = await harness.database.createChat("Shared media");
       const sourceAttachment = await createAttachment(
         harness.applicationPaths,
         chat.id,
@@ -133,13 +139,13 @@ describe("chat history mutations", () => {
         "shared.png",
       );
 
-      const sourceUserMessage = harness.database.appendMessage(
+      const sourceUserMessage = await harness.database.appendMessage(
         chat.id,
         "user",
         "Inspect this image",
         [sourceAttachment],
       );
-      harness.database.appendMessage(chat.id, "assistant", "Looks shared.");
+      await harness.database.appendMessage(chat.id, "assistant", "Looks shared.");
 
       const branch = await branchChatAtMessage(
         harness.applicationPaths,
@@ -153,7 +159,7 @@ describe("chat history mutations", () => {
       const sourceChatSnapshot = harness.database.getChat(chat.id);
 
       expect(sourceChatSnapshot).not.toBeNull();
-      expect(harness.database.deleteChat(chat.id)).toBe(true);
+      expect(await harness.database.deleteChat(chat.id)).toBe(true);
       await cleanupMessageAttachments(sourceChatSnapshot?.messages ?? [], harness.database);
 
       expect(existsSync(sourceAttachment.filePath)).toBe(false);
@@ -167,10 +173,10 @@ describe("chat history mutations", () => {
     const harness = await createHarness();
 
     try {
-      const chat = harness.database.createChat("Batch cleanup");
-      const initialUser = harness.database.appendMessage(chat.id, "user", "Original prompt");
+      const chat = await harness.database.createChat("Batch cleanup");
+      const initialUser = await harness.database.appendMessage(chat.id, "user", "Original prompt");
 
-      harness.database.appendMessage(chat.id, "assistant", "Original answer");
+      await harness.database.appendMessage(chat.id, "assistant", "Original answer");
 
       const sharedAttachment = await createAttachment(
         harness.applicationPaths,
@@ -185,13 +191,15 @@ describe("chat history mutations", () => {
         "exclusive.png",
       );
 
-      const sharedMessage = harness.database.appendMessage(chat.id, "user", "Shared media", [
+      const sharedMessage = await harness.database.appendMessage(chat.id, "user", "Shared media", [
         sharedAttachment,
       ]);
 
-      harness.database.appendMessage(chat.id, "assistant", "Shared answer");
-      harness.database.appendMessage(chat.id, "user", "Exclusive media", [exclusiveAttachment]);
-      harness.database.appendMessage(chat.id, "assistant", "Exclusive answer");
+      await harness.database.appendMessage(chat.id, "assistant", "Shared answer");
+      await harness.database.appendMessage(chat.id, "user", "Exclusive media", [
+        exclusiveAttachment,
+      ]);
+      await harness.database.appendMessage(chat.id, "assistant", "Exclusive answer");
 
       const branch = await branchChatAtMessage(
         harness.applicationPaths,
@@ -202,7 +210,7 @@ describe("chat history mutations", () => {
 
       expect(branch).not.toBeNull();
 
-      const truncated = harness.database.replaceMessageAndTruncateFollowing(
+      const truncated = await harness.database.replaceMessageAndTruncateFollowing(
         chat.id,
         initialUser.id,
         "Edited prompt",

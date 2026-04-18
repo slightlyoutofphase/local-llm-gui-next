@@ -37,14 +37,14 @@ describe("attachment cleanup jobs", () => {
     await removeBackendTestScratchDir(rootDir);
   });
 
-  test("tracks attachment cleanup jobs through queued, running, and completed states", () => {
-    const createdJob = database.createAttachmentCleanupJob("chat-1", "append", [
+  test("tracks attachment cleanup jobs through queued, running, and completed states", async () => {
+    const createdJob = await database.createAttachmentCleanupJob("chat-1", "append", [
       "D:/fake/a.png",
       "D:/fake/b.png",
     ]);
 
-    database.markAttachmentCleanupJobRunning(createdJob.id);
-    database.markAttachmentCleanupJobCompleted(createdJob.id);
+    await database.markAttachmentCleanupJobRunning(createdJob.id);
+    await database.markAttachmentCleanupJobCompleted(createdJob.id);
 
     const jobs = database.listAttachmentCleanupJobs();
 
@@ -57,16 +57,20 @@ describe("attachment cleanup jobs", () => {
     expect(jobs[0]?.lastError).toBeNull();
   });
 
-  test("lists only incomplete attachment cleanup jobs", () => {
-    const queuedJob = database.createAttachmentCleanupJob("chat-1", "edit", ["D:/fake/a.png"]);
-    const runningJob = database.createAttachmentCleanupJob("chat-1", "regenerate", [
+  test("lists only incomplete attachment cleanup jobs", async () => {
+    const queuedJob = await database.createAttachmentCleanupJob("chat-1", "edit", [
+      "D:/fake/a.png",
+    ]);
+    const runningJob = await database.createAttachmentCleanupJob("chat-1", "regenerate", [
       "D:/fake/b.png",
     ]);
-    const completedJob = database.createAttachmentCleanupJob("chat-1", "append", ["D:/fake/c.png"]);
+    const completedJob = await database.createAttachmentCleanupJob("chat-1", "append", [
+      "D:/fake/c.png",
+    ]);
 
-    database.markAttachmentCleanupJobRunning(runningJob.id);
-    database.markAttachmentCleanupJobRunning(completedJob.id);
-    database.markAttachmentCleanupJobCompleted(completedJob.id);
+    await database.markAttachmentCleanupJobRunning(runningJob.id);
+    await database.markAttachmentCleanupJobRunning(completedJob.id);
+    await database.markAttachmentCleanupJobCompleted(completedJob.id);
 
     const jobs = database.listIncompleteAttachmentCleanupJobs();
 
@@ -74,15 +78,15 @@ describe("attachment cleanup jobs", () => {
     expect(jobs.map((job) => job.id)).toEqual([queuedJob.id, runningJob.id]);
   });
 
-  test("records terminal failure details for attachment cleanup jobs", () => {
-    const createdJob = database.createAttachmentCleanupJob("chat-1", "regenerate", [
+  test("records terminal failure details for attachment cleanup jobs", async () => {
+    const createdJob = await database.createAttachmentCleanupJob("chat-1", "regenerate", [
       "D:/fake/a.png",
     ]);
 
-    database.markAttachmentCleanupJobRunning(createdJob.id);
-    database.requeueAttachmentCleanupJob(createdJob.id, "retry later");
-    database.markAttachmentCleanupJobRunning(createdJob.id);
-    database.markAttachmentCleanupJobFailed(createdJob.id, "permission denied");
+    await database.markAttachmentCleanupJobRunning(createdJob.id);
+    await database.requeueAttachmentCleanupJob(createdJob.id, "retry later");
+    await database.markAttachmentCleanupJobRunning(createdJob.id);
+    await database.markAttachmentCleanupJobFailed(createdJob.id, "permission denied");
 
     const jobs = database.listAttachmentCleanupJobs();
 

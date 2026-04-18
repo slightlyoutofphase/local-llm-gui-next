@@ -193,7 +193,6 @@ export function subscribeToJsonSse<TPayload>(
         const parsedEvent = JSON.parse(event.data) as JsonSseEnvelope<TPayload>;
 
         reconnectAttempt = 0;
-        options.onOpen?.();
         options.onPayload(parsedEvent.payload);
       } catch (error) {
         const parseError =
@@ -307,23 +306,27 @@ export async function streamJsonSseRequest<TPayload>(options: {
 }
 
 async function readJsonSseErrorResponseMessage(response: Response): Promise<string> {
-  try {
-    const payload = (await response.json()) as { error?: unknown; message?: unknown };
-
-    if (typeof payload.error === "string" && payload.error.length > 0) {
-      return payload.error;
-    }
-
-    if (typeof payload.message === "string" && payload.message.length > 0) {
-      return payload.message;
-    }
-  } catch {
-    // Fall through to the response text fallback.
-  }
-
   const responseText = await response.text().catch(() => "");
 
-  return responseText.length > 0 ? responseText : `Request failed with status ${response.status}.`;
+  if (responseText.length > 0) {
+    try {
+      const payload = JSON.parse(responseText) as { error?: unknown; message?: unknown };
+
+      if (typeof payload.error === "string" && payload.error.length > 0) {
+        return payload.error;
+      }
+
+      if (typeof payload.message === "string" && payload.message.length > 0) {
+        return payload.message;
+      }
+    } catch {
+      // Not JSON; fall through to return raw text.
+    }
+
+    return responseText;
+  }
+
+  return `Request failed with status ${response.status}.`;
 }
 
 function parseJsonSseSegment(segment: string): Record<string, unknown> | null {

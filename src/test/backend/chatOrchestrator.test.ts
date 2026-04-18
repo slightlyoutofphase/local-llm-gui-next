@@ -44,8 +44,8 @@ describe.serial("createChatGenerationResponse", () => {
   });
 
   test("intercepts a streamed tool call, persists tool messages, and resumes generation", async () => {
-    const chat = database.createChat("Tool test");
-    const userMessage = database.appendMessage(chat.id, "user", "Use the echo tool.");
+    const chat = await database.createChat("Tool test");
+    const userMessage = await database.appendMessage(chat.id, "user", "Use the echo tool.");
     const debugLogService = new DebugLogService();
     const upstreamBodies: Record<string, unknown>[] = [];
 
@@ -244,8 +244,8 @@ describe.serial("createChatGenerationResponse", () => {
   }, 35_000);
 
   test("pauses a tool turn until confirmation is granted", async () => {
-    const chat = database.createChat("Tool confirmation test");
-    const userMessage = database.appendMessage(chat.id, "user", "Use the rename tool.");
+    const chat = await database.createChat("Tool confirmation test");
+    const userMessage = await database.appendMessage(chat.id, "user", "Use the rename tool.");
     const debugLogService = new DebugLogService();
     const upstreamBodies: Record<string, unknown>[] = [];
     let executeCount = 0;
@@ -340,9 +340,9 @@ describe.serial("createChatGenerationResponse", () => {
   });
 
   test("resumes a confirmed tool turn and continues generation", async () => {
-    const chat = database.createChat("Tool confirmation resume");
-    const userMessage = database.appendMessage(chat.id, "user", "Use the rename tool.");
-    const pendingAssistantMessage = database.appendMessage(
+    const chat = await database.createChat("Tool confirmation resume");
+    const userMessage = await database.appendMessage(chat.id, "user", "Use the rename tool.");
+    const pendingAssistantMessage = await database.appendMessage(
       chat.id,
       "assistant",
       "",
@@ -469,8 +469,8 @@ describe.serial("createChatGenerationResponse", () => {
   }, 35_000);
 
   test("surfaces a clean upstream error message for failed tool turns", async () => {
-    const chat = database.createChat("Tool upstream error");
-    const userMessage = database.appendMessage(chat.id, "user", "Use a tool.");
+    const chat = await database.createChat("Tool upstream error");
+    const userMessage = await database.appendMessage(chat.id, "user", "Use a tool.");
     const debugLogService = new DebugLogService();
 
     const fakeManager = {
@@ -518,8 +518,8 @@ describe.serial("createChatGenerationResponse", () => {
   });
 
   test("gracefully falls back when tool turns exceed the safety limit", async () => {
-    const chat = database.createChat("Tool loop limit");
-    const userMessage = database.appendMessage(chat.id, "user", "Keep calling the tool.");
+    const chat = await database.createChat("Tool loop limit");
+    const userMessage = await database.appendMessage(chat.id, "user", "Keep calling the tool.");
     const debugLogService = new DebugLogService();
     let toolTurnCount = 0;
 
@@ -661,8 +661,8 @@ describe.serial("createChatGenerationResponse", () => {
   }, 45_000);
 
   test("turns malformed streamed tool arguments into an invalid_arguments failure without executing the tool", async () => {
-    const chat = database.createChat("Malformed tool args test");
-    const userMessage = database.appendMessage(chat.id, "user", "Call the tool.");
+    const chat = await database.createChat("Malformed tool args test");
+    const userMessage = await database.appendMessage(chat.id, "user", "Call the tool.");
     const debugLogService = new DebugLogService();
     const upstreamBodies: Record<string, unknown>[] = [];
     let executeCount = 0;
@@ -811,8 +811,8 @@ describe.serial("createChatGenerationResponse", () => {
   }, 15_000);
 
   test("closes the tool stream cleanly when the chat is deleted during tool-result persistence", async () => {
-    const chat = database.createChat("Deleted while tooling");
-    const userMessage = database.appendMessage(chat.id, "user", "Use the rename tool.");
+    const chat = await database.createChat("Deleted while tooling");
+    const userMessage = await database.appendMessage(chat.id, "user", "Use the rename tool.");
     const debugLogService = new DebugLogService();
     const upstreamBodies: Record<string, unknown>[] = [];
     let executeCount = 0;
@@ -857,7 +857,7 @@ describe.serial("createChatGenerationResponse", () => {
     const fakeRegistry = createRenameRegistry({
       executeTool: async () => {
         executeCount += 1;
-        database.deleteChat(chat.id);
+        await database.deleteChat(chat.id);
 
         return {
           content: "renamed",
@@ -894,8 +894,8 @@ describe.serial("createChatGenerationResponse", () => {
   }, 15_000);
 
   test("closes the tool stream cleanly when generation is aborted before tool-result persistence", async () => {
-    const chat = database.createChat("Aborted while tooling");
-    const userMessage = database.appendMessage(chat.id, "user", "Use the rename tool.");
+    const chat = await database.createChat("Aborted while tooling");
+    const userMessage = await database.appendMessage(chat.id, "user", "Use the rename tool.");
     const debugLogService = new DebugLogService();
     const generationAbortController = new AbortController();
     const upstreamBodies: Record<string, unknown>[] = [];

@@ -18,6 +18,7 @@ test("buildRevisionInvalidatedUiCache keeps lastChatId while clearing cached mod
     ],
     dbRevision: 3,
     debugPanelOpen: true,
+    lastBuildId: null,
     lastChatId: "chat-123",
   };
 
@@ -25,6 +26,7 @@ test("buildRevisionInvalidatedUiCache keeps lastChatId while clearing cached mod
     cachedModels: [],
     dbRevision: 4,
     debugPanelOpen: true,
+    lastBuildId: null,
     lastChatId: "chat-123",
   });
 });
@@ -38,6 +40,7 @@ test("readUiCacheBestEffort falls back to the default cache when IndexedDB is un
     cachedModels: [],
     dbRevision: 0,
     debugPanelOpen: false,
+    lastBuildId: null,
     lastChatId: null,
   });
 });
@@ -47,6 +50,7 @@ test("writeUiCacheBestEffort returns the merged cache even when persistence fail
     cachedModels: [],
     dbRevision: 7,
     debugPanelOpen: false,
+    lastBuildId: null,
     lastChatId: "chat-123",
   };
 
@@ -64,6 +68,7 @@ test("writeUiCacheBestEffort returns the merged cache even when persistence fail
     cachedModels: [],
     dbRevision: 7,
     debugPanelOpen: true,
+    lastBuildId: null,
     lastChatId: "chat-123",
   });
 });
@@ -79,6 +84,7 @@ test("invalidateUiCacheForRevisionBestEffort preserves chat selection and debug 
     ],
     dbRevision: 3,
     debugPanelOpen: true,
+    lastBuildId: null,
     lastChatId: "chat-123",
   };
 
@@ -90,6 +96,7 @@ test("invalidateUiCacheForRevisionBestEffort preserves chat selection and debug 
     cachedModels: [],
     dbRevision: 4,
     debugPanelOpen: true,
+    lastBuildId: null,
     lastChatId: "chat-123",
   });
 });

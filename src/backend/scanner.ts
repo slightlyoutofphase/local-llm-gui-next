@@ -383,8 +383,11 @@ function normalizeScanConcurrency(maxConcurrency?: number): number {
   return Math.max(1, Math.trunc(maxConcurrency));
 }
 
+const SCANNER_CACHE_VERSION = 1;
+
 function createScanManifestKey(modelsRoot: string, scanCandidates: ScanCandidate[]): string {
   return JSON.stringify({
+    cacheVersion: SCANNER_CACHE_VERSION,
     modelsRoot,
     scanCandidates: scanCandidates.map((candidate) => ({
       baseFileName: candidate.baseFile.fileName,

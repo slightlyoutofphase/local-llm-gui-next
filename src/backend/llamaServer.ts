@@ -763,6 +763,32 @@ export class LlamaServerManager {
     this.clearActiveController(abortController);
   }
 
+  /**
+   * Aborts and clears all active generation and request controllers unconditionally.
+   *
+   * This is used when the child process crashes or exits unexpectedly to ensure
+   * the generation lock is released; without this, subsequent generation requests
+   * would be permanently rejected with 409 Conflict.
+   */
+  private abortAndClearActiveControllers(): void {
+    const activeGenerationAbortController = this.activeGenerationAbortController;
+    const activeRequestAbortController = this.activeRequestAbortController;
+
+    activeGenerationAbortController?.abort();
+
+    if (activeGenerationAbortController) {
+      this.clearActiveController(activeGenerationAbortController);
+    }
+
+    if (
+      activeRequestAbortController &&
+      activeRequestAbortController !== activeGenerationAbortController
+    ) {
+      activeRequestAbortController.abort();
+      this.clearActiveController(activeRequestAbortController);
+    }
+  }
+
   /** Starts tracking a newly proxied request until its fetch or stream fully unwinds. */
   private beginActiveRequest(
     abortController: AbortController,
@@ -1604,6 +1630,7 @@ export class LlamaServerManager {
 
       this.childProcess = null;
       this.activeServerBaseUrl = null;
+      this.abortAndClearActiveControllers();
       this.updateSnapshot({
         status: "error",
         lastError: errorMessage,
@@ -1621,6 +1648,7 @@ export class LlamaServerManager {
       if (!this.unloading) {
         this.childProcess = null;
         this.activeServerBaseUrl = null;
+        this.abortAndClearActiveControllers();
         this.updateSnapshot({
           status: "error",
           lastError: exitMessage,

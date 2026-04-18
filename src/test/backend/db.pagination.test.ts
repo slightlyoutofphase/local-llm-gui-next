@@ -46,11 +46,11 @@ describe.serial("AppDatabase chat pagination", () => {
     await removeBackendTestScratchDir(rootDir);
   });
 
-  test("returns newest transcript pages in ascending order with an older-page cursor", () => {
-    const chat = database.createChat("Paged chat");
+  test("returns newest transcript pages in ascending order with an older-page cursor", async () => {
+    const chat = await database.createChat("Paged chat");
 
     for (let messageIndex = 0; messageIndex < 5; messageIndex += 1) {
-      database.appendMessage(
+      await database.appendMessage(
         chat.id,
         messageIndex % 2 === 0 ? "user" : "assistant",
         `Message ${messageIndex}`,
@@ -74,11 +74,15 @@ describe.serial("AppDatabase chat pagination", () => {
     expect(finalPage?.nextBeforeSequence).toBeNull();
   }, 15_000);
 
-  test("manual chat renames win over later auto-name compare-and-set updates", () => {
-    const chat = database.createChat("New chat");
+  test("manual chat renames win over later auto-name compare-and-set updates", async () => {
+    const chat = await database.createChat("New chat");
 
-    const manuallyRenamedChat = database.updateChatTitle(chat.id, "Manual title");
-    const autoNamedChat = database.updateChatTitleIfMatch(chat.id, "New chat", "Generated title");
+    const manuallyRenamedChat = await database.updateChatTitle(chat.id, "Manual title");
+    const autoNamedChat = await database.updateChatTitleIfMatch(
+      chat.id,
+      "New chat",
+      "Generated title",
+    );
     const persistedChat = database.getChat(chat.id);
 
     expect(manuallyRenamedChat?.title).toBe("Manual title");
@@ -86,16 +90,16 @@ describe.serial("AppDatabase chat pagination", () => {
     expect(persistedChat?.chat.title).toBe("Manual title");
   }, 15_000);
 
-  test("rejects message writes after the parent chat has been deleted", () => {
-    const chat = database.createChat("Deleted chat");
+  test("rejects message writes after the parent chat has been deleted", async () => {
+    const chat = await database.createChat("Deleted chat");
 
-    expect(database.deleteChat(chat.id)).toBe(true);
-    expect(() => database.appendMessage(chat.id, "user", "This write should fail.")).toThrow(
-      `Chat not found: ${chat.id}`,
-    );
+    expect(await database.deleteChat(chat.id)).toBe(true);
+    await expect(
+      database.appendMessage(chat.id, "user", "This write should fail."),
+    ).rejects.toThrow(`Chat not found: ${chat.id}`);
   }, 15_000);
 
-  test("configures a non-zero SQLite busy timeout on each database connection", () => {
+  test("configures a non-zero SQLite busy timeout on each database connection", async () => {
     const databaseHandle = (database as unknown as AppDatabaseProbe).database;
     const pragmaRow = databaseHandle.query("PRAGMA busy_timeout").get();
     const busyTimeout = pragmaRow ? Object.values(pragmaRow)[0] : null;
