@@ -1,0 +1,10 @@
+- The project specification file is `local_llm_gui_spec.md`. It is exactly 1025 lines long. Always refer to this file for the project requirements. Your overarching goal is to complete a full implementation of the `Local LLM GUI` app outlined in this file while ensuring all specific requirements listed in the file are met and adhered to.
+- All TypeScript code you write MUST adhere to the code style and code formatting and code strictness rules outlined in `local_llm_gui_spec.md`.
+- Avoid use of `any` and `unknown` in all code unless STRICTLY necessary. Refactor any clearly unnecessary use of `any` and `unknown` you encounter in the course of regular work.
+- The official documentation file for `llama-server` is `llama_server_docs.md`. It is exactly 1828 lines long. Always refer to this file if you need to better understand how `llama-server` actually works.
+- When needed for testing and so on, a complete actual binary installation of `llama-cpp`, including `llama-server`, is available in the `vendor/llama-cpp` directory.
+- When needed for testing and so on, an actual LLM GGUF + MMPROJ GGUF pair (Unsloth Qwen3.5-0.6B Q8_0, specifically) is available in the `test/models/unsloth/Qwen3.5-0.8B-GGUF` directory. `test/models` represents the top level of the same kind of `MODELS_PATH/PUBLISHERNAME/MODELNAME/MODELFILE.GGUF` directory hierarchy mandated by the project specification.
+- For testing, you are **ONLY** permitted to run tests by using `npm run x` commands where `x` is an actual test script entry that actually exists in `package.json`. You **can** create new script entries in `package.json` if needed. **DO NOT** invoke `bun` directly to run tests. **DO NOT** invoke `playwright` directly to run tests. **WAIT** properly for tests to finish running.
+- `bun` (version 1.3.12) is pre-installed as a global NPM package in this environment.
+- `prettier` (version 3.8.2) is pre-installed as a global NPM package in this environment.
+- `typescript` (verion 6.0.2) is pre-installed as a global NPM package in this environment.
