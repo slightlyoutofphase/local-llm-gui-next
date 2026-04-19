@@ -104,6 +104,6 @@ describe.serial("AppDatabase chat pagination", () => {
     const pragmaRow = databaseHandle.query("PRAGMA busy_timeout").get();
     const busyTimeout = pragmaRow ? Object.values(pragmaRow)[0] : null;
 
-    expect(busyTimeout).toBe(250);
+    expect(busyTimeout).toBe(10000);
   }, 15_000);
 });

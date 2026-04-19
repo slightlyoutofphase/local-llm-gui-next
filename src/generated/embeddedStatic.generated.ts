@@ -39,67 +39,67 @@ import embeddedStaticAsset13 from "../../out/_next/static/chunks/04~qkr16tbgnc.j
 // @ts-ignore Bun resolves file-attribute asset imports during compile.
 import embeddedStaticAsset14 from "../../out/_next/static/chunks/049fmt5nt883p.js" with { type: "file" };
 // @ts-ignore Bun resolves file-attribute asset imports during compile.
-import embeddedStaticAsset15 from "../../out/_next/static/chunks/05hea2qf19vi7.js" with { type: "file" };
+import embeddedStaticAsset15 from "../../out/_next/static/chunks/05dlo114r3w8m.js" with { type: "file" };
 // @ts-ignore Bun resolves file-attribute asset imports during compile.
-import embeddedStaticAsset16 from "../../out/_next/static/chunks/05ymetgoh200a.js" with { type: "file" };
+import embeddedStaticAsset16 from "../../out/_next/static/chunks/05hea2qf19vi7.js" with { type: "file" };
 // @ts-ignore Bun resolves file-attribute asset imports during compile.
-import embeddedStaticAsset17 from "../../out/_next/static/chunks/06rgxiza~2oqz.js" with { type: "file" };
+import embeddedStaticAsset17 from "../../out/_next/static/chunks/05ymetgoh200a.js" with { type: "file" };
 // @ts-ignore Bun resolves file-attribute asset imports during compile.
-import embeddedStaticAsset18 from "../../out/_next/static/chunks/06sa0s.8.8lmh.js" with { type: "file" };
+import embeddedStaticAsset18 from "../../out/_next/static/chunks/06rgxiza~2oqz.js" with { type: "file" };
 // @ts-ignore Bun resolves file-attribute asset imports during compile.
-import embeddedStaticAsset19 from "../../out/_next/static/chunks/072n~5yfbaox2.js" with { type: "file" };
+import embeddedStaticAsset19 from "../../out/_next/static/chunks/06sa0s.8.8lmh.js" with { type: "file" };
 // @ts-ignore Bun resolves file-attribute asset imports during compile.
-import embeddedStaticAsset20 from "../../out/_next/static/chunks/07lie15r06sus.js" with { type: "file" };
+import embeddedStaticAsset20 from "../../out/_next/static/chunks/072n~5yfbaox2.js" with { type: "file" };
 // @ts-ignore Bun resolves file-attribute asset imports during compile.
-import embeddedStaticAsset21 from "../../out/_next/static/chunks/07m6srk7x_9i~.js" with { type: "file" };
+import embeddedStaticAsset21 from "../../out/_next/static/chunks/07lie15r06sus.js" with { type: "file" };
 // @ts-ignore Bun resolves file-attribute asset imports during compile.
-import embeddedStaticAsset22 from "../../out/_next/static/chunks/08qbb003qj7~x.js" with { type: "file" };
+import embeddedStaticAsset22 from "../../out/_next/static/chunks/07m6srk7x_9i~.js" with { type: "file" };
 // @ts-ignore Bun resolves file-attribute asset imports during compile.
-import embeddedStaticAsset23 from "../../out/_next/static/chunks/097ye~vz3poph.js" with { type: "file" };
+import embeddedStaticAsset23 from "../../out/_next/static/chunks/08qbb003qj7~x.js" with { type: "file" };
 // @ts-ignore Bun resolves file-attribute asset imports during compile.
-import embeddedStaticAsset24 from "../../out/_next/static/chunks/0b45bf6127zti.js" with { type: "file" };
+import embeddedStaticAsset24 from "../../out/_next/static/chunks/097ye~vz3poph.js" with { type: "file" };
 // @ts-ignore Bun resolves file-attribute asset imports during compile.
-import embeddedStaticAsset25 from "../../out/_next/static/chunks/0bapywpld9sks.js" with { type: "file" };
+import embeddedStaticAsset25 from "../../out/_next/static/chunks/0b45bf6127zti.js" with { type: "file" };
 // @ts-ignore Bun resolves file-attribute asset imports during compile.
-import embeddedStaticAsset26 from "../../out/_next/static/chunks/0bratbyc738rx.js" with { type: "file" };
+import embeddedStaticAsset26 from "../../out/_next/static/chunks/0bapywpld9sks.js" with { type: "file" };
 // @ts-ignore Bun resolves file-attribute asset imports during compile.
-import embeddedStaticAsset27 from "../../out/_next/static/chunks/0cn_xntg~tk3~.js" with { type: "file" };
+import embeddedStaticAsset27 from "../../out/_next/static/chunks/0bratbyc738rx.js" with { type: "file" };
 // @ts-ignore Bun resolves file-attribute asset imports during compile.
-import embeddedStaticAsset28 from "../../out/_next/static/chunks/0crrjo_ctv5-q.js" with { type: "file" };
+import embeddedStaticAsset28 from "../../out/_next/static/chunks/0cn_xntg~tk3~.js" with { type: "file" };
 // @ts-ignore Bun resolves file-attribute asset imports during compile.
-import embeddedStaticAsset29 from "../../out/_next/static/chunks/0cuys8hmou7~k.js" with { type: "file" };
+import embeddedStaticAsset29 from "../../out/_next/static/chunks/0crrjo_ctv5-q.js" with { type: "file" };
 // @ts-ignore Bun resolves file-attribute asset imports during compile.
-import embeddedStaticAsset30 from "../../out/_next/static/chunks/0dc6g807_f4n4.js" with { type: "file" };
+import embeddedStaticAsset30 from "../../out/_next/static/chunks/0cuys8hmou7~k.js" with { type: "file" };
 // @ts-ignore Bun resolves file-attribute asset imports during compile.
-import embeddedStaticAsset31 from "../../out/_next/static/chunks/0f.p-p324s9bn.js" with { type: "file" };
+import embeddedStaticAsset31 from "../../out/_next/static/chunks/0dc6g807_f4n4.js" with { type: "file" };
 // @ts-ignore Bun resolves file-attribute asset imports during compile.
-import embeddedStaticAsset32 from "../../out/_next/static/chunks/0f7ygzovaflz6.js" with { type: "file" };
+import embeddedStaticAsset32 from "../../out/_next/static/chunks/0f.p-p324s9bn.js" with { type: "file" };
 // @ts-ignore Bun resolves file-attribute asset imports during compile.
-import embeddedStaticAsset33 from "../../out/_next/static/chunks/0fqt4dfa0_47y.js" with { type: "file" };
+import embeddedStaticAsset33 from "../../out/_next/static/chunks/0f7ygzovaflz6.js" with { type: "file" };
 // @ts-ignore Bun resolves file-attribute asset imports during compile.
-import embeddedStaticAsset34 from "../../out/_next/static/chunks/0hmc0_lto7~q6.css" with { type: "file" };
+import embeddedStaticAsset34 from "../../out/_next/static/chunks/0fqt4dfa0_47y.js" with { type: "file" };
 // @ts-ignore Bun resolves file-attribute asset imports during compile.
-import embeddedStaticAsset35 from "../../out/_next/static/chunks/0i2o5jdjqv456.js" with { type: "file" };
+import embeddedStaticAsset35 from "../../out/_next/static/chunks/0hmc0_lto7~q6.css" with { type: "file" };
 // @ts-ignore Bun resolves file-attribute asset imports during compile.
-import embeddedStaticAsset36 from "../../out/_next/static/chunks/0idh6rm.sw-ae.js" with { type: "file" };
+import embeddedStaticAsset36 from "../../out/_next/static/chunks/0i2o5jdjqv456.js" with { type: "file" };
 // @ts-ignore Bun resolves file-attribute asset imports during compile.
-import embeddedStaticAsset37 from "../../out/_next/static/chunks/0igzsyrhs_p0d.js" with { type: "file" };
+import embeddedStaticAsset37 from "../../out/_next/static/chunks/0idh6rm.sw-ae.js" with { type: "file" };
 // @ts-ignore Bun resolves file-attribute asset imports during compile.
-import embeddedStaticAsset38 from "../../out/_next/static/chunks/0iqp04-1qnrem.js" with { type: "file" };
+import embeddedStaticAsset38 from "../../out/_next/static/chunks/0igzsyrhs_p0d.js" with { type: "file" };
 // @ts-ignore Bun resolves file-attribute asset imports during compile.
-import embeddedStaticAsset39 from "../../out/_next/static/chunks/0jk_kuof3czfv.js" with { type: "file" };
+import embeddedStaticAsset39 from "../../out/_next/static/chunks/0iqp04-1qnrem.js" with { type: "file" };
 // @ts-ignore Bun resolves file-attribute asset imports during compile.
-import embeddedStaticAsset40 from "../../out/_next/static/chunks/0leouzou3dra3.js" with { type: "file" };
+import embeddedStaticAsset40 from "../../out/_next/static/chunks/0jk_kuof3czfv.js" with { type: "file" };
 // @ts-ignore Bun resolves file-attribute asset imports during compile.
-import embeddedStaticAsset41 from "../../out/_next/static/chunks/0m63j0s_wro_3.js" with { type: "file" };
+import embeddedStaticAsset41 from "../../out/_next/static/chunks/0leouzou3dra3.js" with { type: "file" };
 // @ts-ignore Bun resolves file-attribute asset imports during compile.
-import embeddedStaticAsset42 from "../../out/_next/static/chunks/0mct_q48lt~ae.js" with { type: "file" };
+import embeddedStaticAsset42 from "../../out/_next/static/chunks/0m63j0s_wro_3.js" with { type: "file" };
 // @ts-ignore Bun resolves file-attribute asset imports during compile.
-import embeddedStaticAsset43 from "../../out/_next/static/chunks/0n_wo11m1fjo7.js" with { type: "file" };
+import embeddedStaticAsset43 from "../../out/_next/static/chunks/0mct_q48lt~ae.js" with { type: "file" };
 // @ts-ignore Bun resolves file-attribute asset imports during compile.
-import embeddedStaticAsset44 from "../../out/_next/static/chunks/0okv~nny3k3sl.js" with { type: "file" };
+import embeddedStaticAsset44 from "../../out/_next/static/chunks/0n_wo11m1fjo7.js" with { type: "file" };
 // @ts-ignore Bun resolves file-attribute asset imports during compile.
-import embeddedStaticAsset45 from "../../out/_next/static/chunks/0peyqughyzr-_.js" with { type: "file" };
+import embeddedStaticAsset45 from "../../out/_next/static/chunks/0okv~nny3k3sl.js" with { type: "file" };
 // @ts-ignore Bun resolves file-attribute asset imports during compile.
 import embeddedStaticAsset46 from "../../out/_next/static/chunks/0q27rea6_vabi.js" with { type: "file" };
 // @ts-ignore Bun resolves file-attribute asset imports during compile.
@@ -173,11 +173,11 @@ import embeddedStaticAsset80 from "../../out/_next/static/chunks/182ra.f34uxsf.j
 // @ts-ignore Bun resolves file-attribute asset imports during compile.
 import embeddedStaticAsset81 from "../../out/_next/static/chunks/turbopack-0cugxvovrq7h7.js" with { type: "file" };
 // @ts-ignore Bun resolves file-attribute asset imports during compile.
-import embeddedStaticAsset82 from "../../out/_next/static/CpIpiXKb5dk6JUO3xUhcB/_buildManifest.js" with { type: "file" };
+import embeddedStaticAsset82 from "../../out/_next/static/FfYpXBdViUqta6jl2h9J4/_buildManifest.js" with { type: "file" };
 // @ts-ignore Bun resolves file-attribute asset imports during compile.
-import embeddedStaticAsset83 from "../../out/_next/static/CpIpiXKb5dk6JUO3xUhcB/_clientMiddlewareManifest.js" with { type: "file" };
+import embeddedStaticAsset83 from "../../out/_next/static/FfYpXBdViUqta6jl2h9J4/_clientMiddlewareManifest.js" with { type: "file" };
 // @ts-ignore Bun resolves file-attribute asset imports during compile.
-import embeddedStaticAsset84 from "../../out/_next/static/CpIpiXKb5dk6JUO3xUhcB/_ssgManifest.js" with { type: "file" };
+import embeddedStaticAsset84 from "../../out/_next/static/FfYpXBdViUqta6jl2h9J4/_ssgManifest.js" with { type: "file" };
 // @ts-ignore Bun resolves file-attribute asset imports during compile.
 import embeddedStaticAsset85 from "../../out/_next/static/media/02263ebadd758ea4-s.0qg7j5o.yrclm.woff2" with { type: "file" };
 // @ts-ignore Bun resolves file-attribute asset imports during compile.
@@ -392,37 +392,37 @@ export const EMBEDDED_STATIC_FILES: EmbeddedStaticFile[] = [
   { requestPath: "/_next/static/chunks/03j38ty3eb7jf.js", filePath: embeddedStaticAsset12 },
   { requestPath: "/_next/static/chunks/04~qkr16tbgnc.js", filePath: embeddedStaticAsset13 },
   { requestPath: "/_next/static/chunks/049fmt5nt883p.js", filePath: embeddedStaticAsset14 },
-  { requestPath: "/_next/static/chunks/05hea2qf19vi7.js", filePath: embeddedStaticAsset15 },
-  { requestPath: "/_next/static/chunks/05ymetgoh200a.js", filePath: embeddedStaticAsset16 },
-  { requestPath: "/_next/static/chunks/06rgxiza~2oqz.js", filePath: embeddedStaticAsset17 },
-  { requestPath: "/_next/static/chunks/06sa0s.8.8lmh.js", filePath: embeddedStaticAsset18 },
-  { requestPath: "/_next/static/chunks/072n~5yfbaox2.js", filePath: embeddedStaticAsset19 },
-  { requestPath: "/_next/static/chunks/07lie15r06sus.js", filePath: embeddedStaticAsset20 },
-  { requestPath: "/_next/static/chunks/07m6srk7x_9i~.js", filePath: embeddedStaticAsset21 },
-  { requestPath: "/_next/static/chunks/08qbb003qj7~x.js", filePath: embeddedStaticAsset22 },
-  { requestPath: "/_next/static/chunks/097ye~vz3poph.js", filePath: embeddedStaticAsset23 },
-  { requestPath: "/_next/static/chunks/0b45bf6127zti.js", filePath: embeddedStaticAsset24 },
-  { requestPath: "/_next/static/chunks/0bapywpld9sks.js", filePath: embeddedStaticAsset25 },
-  { requestPath: "/_next/static/chunks/0bratbyc738rx.js", filePath: embeddedStaticAsset26 },
-  { requestPath: "/_next/static/chunks/0cn_xntg~tk3~.js", filePath: embeddedStaticAsset27 },
-  { requestPath: "/_next/static/chunks/0crrjo_ctv5-q.js", filePath: embeddedStaticAsset28 },
-  { requestPath: "/_next/static/chunks/0cuys8hmou7~k.js", filePath: embeddedStaticAsset29 },
-  { requestPath: "/_next/static/chunks/0dc6g807_f4n4.js", filePath: embeddedStaticAsset30 },
-  { requestPath: "/_next/static/chunks/0f.p-p324s9bn.js", filePath: embeddedStaticAsset31 },
-  { requestPath: "/_next/static/chunks/0f7ygzovaflz6.js", filePath: embeddedStaticAsset32 },
-  { requestPath: "/_next/static/chunks/0fqt4dfa0_47y.js", filePath: embeddedStaticAsset33 },
-  { requestPath: "/_next/static/chunks/0hmc0_lto7~q6.css", filePath: embeddedStaticAsset34 },
-  { requestPath: "/_next/static/chunks/0i2o5jdjqv456.js", filePath: embeddedStaticAsset35 },
-  { requestPath: "/_next/static/chunks/0idh6rm.sw-ae.js", filePath: embeddedStaticAsset36 },
-  { requestPath: "/_next/static/chunks/0igzsyrhs_p0d.js", filePath: embeddedStaticAsset37 },
-  { requestPath: "/_next/static/chunks/0iqp04-1qnrem.js", filePath: embeddedStaticAsset38 },
-  { requestPath: "/_next/static/chunks/0jk_kuof3czfv.js", filePath: embeddedStaticAsset39 },
-  { requestPath: "/_next/static/chunks/0leouzou3dra3.js", filePath: embeddedStaticAsset40 },
-  { requestPath: "/_next/static/chunks/0m63j0s_wro_3.js", filePath: embeddedStaticAsset41 },
-  { requestPath: "/_next/static/chunks/0mct_q48lt~ae.js", filePath: embeddedStaticAsset42 },
-  { requestPath: "/_next/static/chunks/0n_wo11m1fjo7.js", filePath: embeddedStaticAsset43 },
-  { requestPath: "/_next/static/chunks/0okv~nny3k3sl.js", filePath: embeddedStaticAsset44 },
-  { requestPath: "/_next/static/chunks/0peyqughyzr-_.js", filePath: embeddedStaticAsset45 },
+  { requestPath: "/_next/static/chunks/05dlo114r3w8m.js", filePath: embeddedStaticAsset15 },
+  { requestPath: "/_next/static/chunks/05hea2qf19vi7.js", filePath: embeddedStaticAsset16 },
+  { requestPath: "/_next/static/chunks/05ymetgoh200a.js", filePath: embeddedStaticAsset17 },
+  { requestPath: "/_next/static/chunks/06rgxiza~2oqz.js", filePath: embeddedStaticAsset18 },
+  { requestPath: "/_next/static/chunks/06sa0s.8.8lmh.js", filePath: embeddedStaticAsset19 },
+  { requestPath: "/_next/static/chunks/072n~5yfbaox2.js", filePath: embeddedStaticAsset20 },
+  { requestPath: "/_next/static/chunks/07lie15r06sus.js", filePath: embeddedStaticAsset21 },
+  { requestPath: "/_next/static/chunks/07m6srk7x_9i~.js", filePath: embeddedStaticAsset22 },
+  { requestPath: "/_next/static/chunks/08qbb003qj7~x.js", filePath: embeddedStaticAsset23 },
+  { requestPath: "/_next/static/chunks/097ye~vz3poph.js", filePath: embeddedStaticAsset24 },
+  { requestPath: "/_next/static/chunks/0b45bf6127zti.js", filePath: embeddedStaticAsset25 },
+  { requestPath: "/_next/static/chunks/0bapywpld9sks.js", filePath: embeddedStaticAsset26 },
+  { requestPath: "/_next/static/chunks/0bratbyc738rx.js", filePath: embeddedStaticAsset27 },
+  { requestPath: "/_next/static/chunks/0cn_xntg~tk3~.js", filePath: embeddedStaticAsset28 },
+  { requestPath: "/_next/static/chunks/0crrjo_ctv5-q.js", filePath: embeddedStaticAsset29 },
+  { requestPath: "/_next/static/chunks/0cuys8hmou7~k.js", filePath: embeddedStaticAsset30 },
+  { requestPath: "/_next/static/chunks/0dc6g807_f4n4.js", filePath: embeddedStaticAsset31 },
+  { requestPath: "/_next/static/chunks/0f.p-p324s9bn.js", filePath: embeddedStaticAsset32 },
+  { requestPath: "/_next/static/chunks/0f7ygzovaflz6.js", filePath: embeddedStaticAsset33 },
+  { requestPath: "/_next/static/chunks/0fqt4dfa0_47y.js", filePath: embeddedStaticAsset34 },
+  { requestPath: "/_next/static/chunks/0hmc0_lto7~q6.css", filePath: embeddedStaticAsset35 },
+  { requestPath: "/_next/static/chunks/0i2o5jdjqv456.js", filePath: embeddedStaticAsset36 },
+  { requestPath: "/_next/static/chunks/0idh6rm.sw-ae.js", filePath: embeddedStaticAsset37 },
+  { requestPath: "/_next/static/chunks/0igzsyrhs_p0d.js", filePath: embeddedStaticAsset38 },
+  { requestPath: "/_next/static/chunks/0iqp04-1qnrem.js", filePath: embeddedStaticAsset39 },
+  { requestPath: "/_next/static/chunks/0jk_kuof3czfv.js", filePath: embeddedStaticAsset40 },
+  { requestPath: "/_next/static/chunks/0leouzou3dra3.js", filePath: embeddedStaticAsset41 },
+  { requestPath: "/_next/static/chunks/0m63j0s_wro_3.js", filePath: embeddedStaticAsset42 },
+  { requestPath: "/_next/static/chunks/0mct_q48lt~ae.js", filePath: embeddedStaticAsset43 },
+  { requestPath: "/_next/static/chunks/0n_wo11m1fjo7.js", filePath: embeddedStaticAsset44 },
+  { requestPath: "/_next/static/chunks/0okv~nny3k3sl.js", filePath: embeddedStaticAsset45 },
   { requestPath: "/_next/static/chunks/0q27rea6_vabi.js", filePath: embeddedStaticAsset46 },
   { requestPath: "/_next/static/chunks/0qim.nol3nnhi.js", filePath: embeddedStaticAsset47 },
   { requestPath: "/_next/static/chunks/0qj_w0e72y2n5.js", filePath: embeddedStaticAsset48 },
@@ -463,15 +463,15 @@ export const EMBEDDED_STATIC_FILES: EmbeddedStaticFile[] = [
     filePath: embeddedStaticAsset81,
   },
   {
-    requestPath: "/_next/static/CpIpiXKb5dk6JUO3xUhcB/_buildManifest.js",
+    requestPath: "/_next/static/FfYpXBdViUqta6jl2h9J4/_buildManifest.js",
     filePath: embeddedStaticAsset82,
   },
   {
-    requestPath: "/_next/static/CpIpiXKb5dk6JUO3xUhcB/_clientMiddlewareManifest.js",
+    requestPath: "/_next/static/FfYpXBdViUqta6jl2h9J4/_clientMiddlewareManifest.js",
     filePath: embeddedStaticAsset83,
   },
   {
-    requestPath: "/_next/static/CpIpiXKb5dk6JUO3xUhcB/_ssgManifest.js",
+    requestPath: "/_next/static/FfYpXBdViUqta6jl2h9J4/_ssgManifest.js",
     filePath: embeddedStaticAsset84,
   },
   {

@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, open, rm } from "node:fs/promises";
+import { mkdir, open, rm, readdir } from "node:fs/promises";
 import path from "node:path";
 import type {
   AppConfig,
@@ -24,13 +24,7 @@ import {
   resolveAttachmentMimeTypeFromFileLike,
 } from "../lib/attachmentTypePolicy";
 import { validateLoadInferenceSettings } from "../lib/loadInferenceValidation";
-import {
-  cleanupFinalizedPendingAttachments,
-  cleanupRemovedMessageAttachmentsAfterMutation,
-  normalizeAttachmentFileName,
-  promotePendingAttachments,
-  rollbackPromotedPendingAttachments,
-} from "./attachmentLifecycle";
+import { normalizeAttachmentFileName, simplePromoteAttachments } from "./attachmentLifecycle";
 import { deleteAttachmentArtifacts } from "./attachmentReplay";
 import { buildAutoNamePrompt, normalizeGeneratedChatTitle } from "./autoNaming";
 import { branchChatAtMessage, cleanupMessageAttachments } from "./chatMutations";
@@ -44,11 +38,7 @@ import { ensureApplicationDirectories, getApplicationPaths } from "./paths";
 import { tryDecodeRequestPathComponent } from "./requestIngress";
 import { ModelScanner } from "./scanner";
 import { JsonSseBroadcaster } from "./sse";
-import {
-  sweepStartupAttachmentCleanupJobs,
-  sweepStartupPendingAttachments,
-  sweepStartupTemplateOverrideFiles,
-} from "./startupCleanup";
+import { sweepStartupTemplateOverrideFiles } from "./startupCleanup";
 import { runLocalToolWorkerProcess } from "./tools/localToolWorkerProcess";
 import { LocalToolRegistry } from "./tools/registry";
 
@@ -153,23 +143,9 @@ async function startServer(): Promise<void> {
     debugLogService.serverLog(initialConfigWarning);
   }
 
-  await sweepStartupAttachmentCleanupJobs({
-    database,
-    log: (message) => {
-      debugLogService.serverLog(message);
-    },
-  });
-
-  await sweepStartupPendingAttachments({
-    applicationPaths,
-    database,
-    log: (message) => {
-      debugLogService.serverLog(message);
-    },
-  });
   await sweepStartupTemplateOverrideFiles({
     applicationPaths,
-    log: (message) => {
+    log: (message: string) => {
       debugLogService.serverLog(message);
     },
   });
@@ -215,25 +191,18 @@ async function startServer(): Promise<void> {
       return createErrorResponse(400, "At least one uploaded file is required.");
     }
 
-    const stalePendingAttachments = database.listPendingAttachmentsForMessage(
-      chatIdValue,
-      messageId,
-    );
-
-    if (stalePendingAttachments.length > 0) {
-      await deleteAttachmentFiles(stalePendingAttachments);
-      await database.markPendingAttachmentsAbandoned(
-        stalePendingAttachments.map((attachment) => attachment.id),
-        "superseded by a newer upload for the same message slot",
-      );
-    }
-
+    // We no longer track pending attachments in the DB.
+    // Instead, just clear the target pending directory so we don't
+    // accumulate orphaned files if the user uploads multiple times.
     const targetDirectory = path.join(
       applicationPaths.mediaDir,
       chatIdValue,
       ".pending",
       messageId,
     );
+
+    await rm(targetDirectory, { force: true, recursive: true });
+
     const uploadFiles: File[] = [];
 
     for (const fileEntry of fileEntries) {
@@ -321,21 +290,13 @@ async function startServer(): Promise<void> {
         attachments.push(attachment);
         await writeFileStream(targetFilePath, upload.file.stream());
       }
-
-      for (const attachment of attachments) {
-        database.createPendingAttachment(chatIdValue, messageId, attachment);
-      }
     } catch (error) {
       await deleteAttachmentFiles(attachments);
-      await database.markPendingAttachmentsAbandoned(
-        attachments.map((attachment) => attachment.id),
-        error instanceof Error ? error.message : String(error),
-      );
       throw error;
     }
 
     debugLogService.verboseServerLog(
-      `Stored ${String(attachments.length)} pending attachment(s) for chat ${chatIdValue} message ${messageId}.`,
+      `Stored ${String(attachments.length)} pending attachment(s) for chat ${chatIdValue} message ${messageId} on disk.`,
     );
 
     return Response.json(
@@ -646,7 +607,7 @@ async function startServer(): Promise<void> {
         },
         DELETE: async (request: RouteRequest<{ chatId: string }>) => {
           assertTrustedWriteRequest(request);
-          await llamaServerManager.stopGeneration(request.params.chatId);
+          await llamaServerManager.stopGeneration();
           const existingChat = database.getChat(request.params.chatId);
 
           if (!existingChat) {
@@ -729,81 +690,36 @@ async function startServer(): Promise<void> {
             body.mediaAttachments,
           );
 
-          let createdMessage;
-
           try {
-            createdMessage = await database.appendMessage(
+            const createdMessage = await database.appendMessage(
               request.params.chatId,
               messageRole,
               typeof body.content === "string" ? body.content : "",
-              preparedAttachments.finalAttachments,
+              preparedAttachments,
               typeof body.reasoningContent === "string" ? body.reasoningContent : undefined,
               body.reasoningTruncated ?? false,
               body.metadata && typeof body.metadata === "object" ? body.metadata : {},
               messageId,
-              preparedAttachments.finalAttachments,
+            );
+
+            debugLogService.verboseServerLog(
+              `Persisted ${messageRole} message ${createdMessage.id} for chat ${request.params.chatId}.`,
+            );
+
+            return Response.json(
+              {
+                dbRevision: database.getRevision(),
+                message: createdMessage,
+              },
+              { status: 201 },
             );
           } catch (error) {
-            await rollbackPromotedPendingAttachments({
-              finalAttachments: preparedAttachments.finalAttachments,
-              pendingAttachments: preparedAttachments.pendingAttachments,
-            });
-
             if (error instanceof ChatNotFoundError) {
               return createErrorResponse(404, error.message);
             }
 
             throw error;
           }
-
-          let attachmentCleanupError: string | null = null;
-
-          try {
-            await cleanupFinalizedPendingAttachments({
-              chatId: request.params.chatId,
-              createCleanupJob: async (chatId, operation, filePaths) =>
-                (await database.createAttachmentCleanupJob(chatId, operation, filePaths)).id,
-              deletePendingAttachmentFiles: deleteAttachmentFiles,
-              log: (message) => {
-                debugLogService.serverLog(message);
-              },
-              markCleanupJobCompleted: async (jobId) => {
-                await database.markAttachmentCleanupJobCompleted(jobId);
-              },
-              markCleanupJobFailed: async (jobId, errorMessage) => {
-                await database.markAttachmentCleanupJobFailed(jobId, errorMessage);
-              },
-              markCleanupJobQueued: async (jobId, errorMessage) => {
-                await database.requeueAttachmentCleanupJob(jobId, errorMessage);
-              },
-              markCleanupJobRunning: async (jobId) => {
-                await database.markAttachmentCleanupJobRunning(jobId);
-              },
-              markPendingAttachmentsCleanupFailed: async (attachmentIds, errorMessage) => {
-                await database.markPendingAttachmentsCleanupFailed(attachmentIds, errorMessage);
-              },
-              messageId: createdMessage.id,
-              pendingAttachments: preparedAttachments.pendingAttachments,
-            });
-          } catch (error) {
-            attachmentCleanupError = error instanceof Error ? error.message : String(error);
-            debugLogService.serverLog(
-              `Finalized pending attachment cleanup failed for chat ${request.params.chatId} message ${createdMessage.id}: ${attachmentCleanupError}`,
-            );
-          }
-
-          debugLogService.verboseServerLog(
-            `Persisted ${messageRole} message ${createdMessage.id} for chat ${request.params.chatId}.`,
-          );
-
-          return Response.json(
-            {
-              dbRevision: database.getRevision(),
-              message: createdMessage,
-              ...(attachmentCleanupError ? { attachmentCleanupError } : {}),
-            },
-            { status: 201 },
-          );
         },
       },
       "/api/chats/:chatId/edit": {
@@ -821,7 +737,7 @@ async function startServer(): Promise<void> {
             return createErrorResponse(400, "Message edits must include non-empty content.");
           }
 
-          await llamaServerManager.stopGeneration(request.params.chatId);
+          await llamaServerManager.stopGeneration();
 
           const existingMessage = database.getMessage(request.params.chatId, body.messageId);
 
@@ -843,29 +759,10 @@ async function startServer(): Promise<void> {
             return createErrorResponse(404, `Chat not found: ${request.params.chatId}`);
           }
 
-          void cleanupRemovedMessageAttachmentsAfterMutation({
-            chatId: request.params.chatId,
-            cleanupRemovedMessageAttachments: (messages) =>
-              cleanupMessageAttachments(messages, database),
-            createCleanupJob: async (chatId, operation, filePaths) =>
-              (await database.createAttachmentCleanupJob(chatId, operation, filePaths)).id,
-            log: (message) => {
-              debugLogService.serverLog(message);
-            },
-            markCleanupJobCompleted: async (jobId) => {
-              await database.markAttachmentCleanupJobCompleted(jobId);
-            },
-            markCleanupJobFailed: async (jobId, errorMessage) => {
-              await database.markAttachmentCleanupJobFailed(jobId, errorMessage);
-            },
-            markCleanupJobQueued: async (jobId, errorMessage) => {
-              await database.requeueAttachmentCleanupJob(jobId, errorMessage);
-            },
-            markCleanupJobRunning: async (jobId) => {
-              await database.markAttachmentCleanupJobRunning(jobId);
-            },
-            operation: "edit",
-            removedMessages: result.removedMessages,
+          void cleanupMessageAttachments(result.removedMessages, database).catch((error) => {
+            debugLogService.serverLog(
+              `Failed to clean up attachments after edit for chat ${request.params.chatId}: ${error instanceof Error ? error.message : String(error)}`,
+            );
           });
 
           return Response.json({
@@ -885,7 +782,7 @@ async function startServer(): Promise<void> {
             return createErrorResponse(400, "Missing required field: messageId.");
           }
 
-          await llamaServerManager.stopGeneration(request.params.chatId);
+          await llamaServerManager.stopGeneration();
 
           const existingMessage = database.getMessage(request.params.chatId, body.messageId);
 
@@ -906,29 +803,10 @@ async function startServer(): Promise<void> {
             return createErrorResponse(404, `Chat not found: ${request.params.chatId}`);
           }
 
-          void cleanupRemovedMessageAttachmentsAfterMutation({
-            chatId: request.params.chatId,
-            cleanupRemovedMessageAttachments: (messages) =>
-              cleanupMessageAttachments(messages, database),
-            createCleanupJob: async (chatId, operation, filePaths) =>
-              (await database.createAttachmentCleanupJob(chatId, operation, filePaths)).id,
-            log: (message) => {
-              debugLogService.serverLog(message);
-            },
-            markCleanupJobCompleted: async (jobId) => {
-              await database.markAttachmentCleanupJobCompleted(jobId);
-            },
-            markCleanupJobFailed: async (jobId, errorMessage) => {
-              await database.markAttachmentCleanupJobFailed(jobId, errorMessage);
-            },
-            markCleanupJobQueued: async (jobId, errorMessage) => {
-              await database.requeueAttachmentCleanupJob(jobId, errorMessage);
-            },
-            markCleanupJobRunning: async (jobId) => {
-              await database.markAttachmentCleanupJobRunning(jobId);
-            },
-            operation: "regenerate",
-            removedMessages: result.removedMessages,
+          void cleanupMessageAttachments(result.removedMessages, database).catch((error) => {
+            debugLogService.serverLog(
+              `Failed to clean up attachments after regenerate for chat ${request.params.chatId}: ${error instanceof Error ? error.message : String(error)}`,
+            );
           });
 
           return Response.json({
@@ -1028,7 +906,6 @@ async function startServer(): Promise<void> {
                 temperature: 0.2,
               },
               request.signal,
-              "background",
             );
 
             if (completionResponse.status === 499) {
@@ -1409,43 +1286,38 @@ async function startServer(): Promise<void> {
           }
 
           const attachmentIds = readAttachmentIds(attachmentIdsValue);
-          const pendingAttachments = database
-            .listPendingAttachmentsForMessage(chatIdValue, messageId)
-            .filter(
-              (attachment) => attachmentIds.length === 0 || attachmentIds.includes(attachment.id),
-            );
+          const pendingDir = path.join(
+            applicationPaths.mediaDir,
+            chatIdValue,
+            ".pending",
+            messageId,
+          );
+          const deletedAttachmentIds: string[] = [];
 
-          if (pendingAttachments.length === 0) {
-            return Response.json({
-              dbRevision: database.getRevision(),
-              deletedAttachmentIds: [],
-            });
+          if (existsSync(pendingDir)) {
+            const files = await readdir(pendingDir);
+
+            for (const file of files) {
+              const fileId = path.parse(file).name;
+
+              if (attachmentIds.length === 0 || attachmentIds.includes(fileId)) {
+                await rm(path.join(pendingDir, file), { force: true });
+                deletedAttachmentIds.push(fileId);
+              }
+            }
+
+            // Clean up the directory itself if it's now empty.
+            if ((await readdir(pendingDir)).length === 0) {
+              await rm(pendingDir, { force: true, recursive: true }).catch(() => {
+                // Ignore transient cleanup errors
+              });
+            }
           }
 
-          try {
-            await deleteAttachmentFiles(pendingAttachments);
-            const deletedAttachmentIds = pendingAttachments.map((attachment) => attachment.id);
-            database.deletePendingAttachments(deletedAttachmentIds);
-
-            return Response.json({
-              dbRevision: database.getRevision(),
-              deletedAttachmentIds,
-            });
-          } catch (error) {
-            const pendingAttachmentIds = pendingAttachments.map((attachment) => attachment.id);
-
-            await database.markPendingAttachmentsAbandoned(
-              pendingAttachmentIds,
-              error instanceof Error ? error.message : String(error),
-            );
-
-            return createErrorResponse(
-              500,
-              `Failed to delete pending attachment artifact(s): ${
-                error instanceof Error ? error.message : String(error)
-              }`,
-            );
-          }
+          return Response.json({
+            dbRevision: database.getRevision(),
+            deletedAttachmentIds,
+          });
         },
       },
       "/api/*": false,
@@ -1483,19 +1355,17 @@ async function startServer(): Promise<void> {
             : null;
         const inlineMessageCount = Array.isArray(body["messages"]) ? body["messages"].length : 0;
 
-        return await runWithForegroundGenerationSession(chatId, request.signal, async (signal) => {
-          debugLogService.verboseServerLog(
-            `Accepted chat generation request${chatId ? ` for chat ${chatId}` : ""} with ${String(inlineMessageCount)} inline message(s).`,
-          );
+        debugLogService.verboseServerLog(
+          `Accepted chat generation request${chatId ? ` for chat ${chatId}` : ""} with ${String(inlineMessageCount)} inline message(s).`,
+        );
 
-          return await createChatGenerationResponse({
-            database,
-            debugLogService,
-            llamaServerManager,
-            requestBody: body,
-            signal,
-            toolRegistry,
-          });
+        return await createChatGenerationResponse({
+          database,
+          debugLogService,
+          llamaServerManager,
+          requestBody: body,
+          signal: request.signal,
+          toolRegistry,
         });
       }
 
@@ -1503,13 +1373,8 @@ async function startServer(): Promise<void> {
         activeServer.timeout(request, 0);
 
         const body = await readJsonObject(request);
-        const chatId = typeof body["chatId"] === "string" ? body["chatId"] : null;
 
-        return await runWithForegroundGenerationSession(
-          chatId,
-          request.signal,
-          async (signal) => await llamaServerManager.proxyCompletion(body, signal, "foreground"),
-        );
+        return await llamaServerManager.proxyCompletion(body, request.signal);
       }
 
       if (request.method === "POST") {
@@ -1537,24 +1402,23 @@ async function startServer(): Promise<void> {
             return createErrorResponse(400, "Missing required field: approved.");
           }
 
-          const approved = body.approved;
+          const approved = body.approved === true;
           const assistantMessageId = body.assistantMessageId;
 
-          return await runWithForegroundGenerationSession(
+          if (typeof assistantMessageId !== "string" || assistantMessageId.trim().length === 0) {
+            return createErrorResponse(400, "Missing required field: assistantMessageId.");
+          }
+
+          return await createToolConfirmationResponse({
+            approved,
+            assistantMessageId,
             chatId,
-            request.signal,
-            async (signal) =>
-              await createToolConfirmationResponse({
-                approved,
-                assistantMessageId,
-                chatId,
-                database,
-                debugLogService,
-                llamaServerManager,
-                signal,
-                toolRegistry,
-              }),
-          );
+            database,
+            debugLogService,
+            llamaServerManager,
+            signal: request.signal,
+            toolRegistry,
+          });
         }
       }
 
@@ -1704,20 +1568,11 @@ async function runPeriodicStaleArtifactSweep(): Promise<void> {
     return;
   }
 
-  await sweepStartupPendingAttachments({
-    applicationPaths,
-    database,
-    log: (message) => {
-      debugLogService.serverLog(message);
-    },
-    minimumAgeMs: STALE_ARTIFACT_MAX_AGE_MS,
-  });
-
   const activeTemplateFilePath = llamaServerManager.getActiveTemplateFilePath();
 
   await sweepStartupTemplateOverrideFiles({
     applicationPaths,
-    log: (message) => {
+    log: (message: string) => {
       debugLogService.serverLog(message);
     },
     minimumAgeMs: STALE_ARTIFACT_MAX_AGE_MS,
@@ -1772,94 +1627,6 @@ async function readBackendResponseErrorMessage(response: {
   }
 
   return responseText;
-}
-
-async function runWithForegroundGenerationSession(
-  chatId: string | null,
-  downstreamSignal: AbortSignal,
-  operation: (signal: AbortSignal) => Promise<Response>,
-): Promise<Response> {
-  const generationSession = llamaServerManager.beginForegroundGeneration(chatId, downstreamSignal);
-
-  try {
-    const response = await operation(generationSession.signal);
-
-    return wrapForegroundGenerationResponse(response, generationSession.complete);
-  } catch (error) {
-    generationSession.complete();
-    throw error;
-  }
-}
-
-function wrapForegroundGenerationResponse(response: Response, complete: () => void): Response {
-  if (!isEventStreamResponse(response) || !response.body) {
-    complete();
-    return response;
-  }
-
-  let upstreamReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
-  let completed = false;
-  const finalize = (): void => {
-    if (!completed) {
-      completed = true;
-      complete();
-    }
-  };
-
-  const createReader = (): ReadableStreamDefaultReader<Uint8Array> => {
-    try {
-      return (
-        response.body as ReadableStream<Uint8Array>
-      ).getReader() as unknown as ReadableStreamDefaultReader<Uint8Array>;
-    } catch (error) {
-      finalize();
-      throw error;
-    }
-  };
-
-  return new Response(
-    new ReadableStream<Uint8Array>({
-      async cancel(reason) {
-        try {
-          if (upstreamReader) {
-            await upstreamReader.cancel(reason);
-          }
-        } finally {
-          finalize();
-        }
-      },
-      async start(controller) {
-        try {
-          upstreamReader = createReader();
-
-          while (true) {
-            const readResult = await upstreamReader.read();
-
-            if (readResult.done) {
-              break;
-            }
-
-            controller.enqueue(readResult.value);
-          }
-
-          controller.close();
-        } catch (error) {
-          controller.error(error);
-        } finally {
-          finalize();
-        }
-      },
-    }),
-    {
-      headers: new Headers(response.headers),
-      status: response.status,
-      statusText: response.statusText,
-    },
-  );
-}
-
-function isEventStreamResponse(response: Response): boolean {
-  return response.headers.get("Content-Type")?.includes("text/event-stream") ?? false;
 }
 
 function createChatsExportResponse(request: Request): Response {
@@ -2613,73 +2380,48 @@ async function finalizePendingMessageAttachments(
   chatId: string,
   messageId: string,
   mediaAttachmentsValue: unknown,
-): Promise<{
-  finalAttachments: MediaAttachmentRecord[];
-  pendingAttachments: MediaAttachmentRecord[];
-}> {
-  const attachmentIds = readRequestedAttachmentIds(mediaAttachmentsValue);
+): Promise<MediaAttachmentRecord[]> {
+  const pendingAttachments = readPendingAttachments(mediaAttachmentsValue);
 
-  if (attachmentIds.length === 0) {
-    return {
-      finalAttachments: [],
-      pendingAttachments: [],
-    };
+  if (pendingAttachments.length === 0) {
+    return [];
   }
 
-  const pendingAttachments = database.getPendingAttachments(chatId, messageId, attachmentIds);
-
-  if (pendingAttachments.length !== attachmentIds.length) {
-    throw new HttpError(
-      400,
-      "One or more uploaded attachments could not be resolved for this message.",
-    );
-  }
-
-  const finalAttachments = await promotePendingAttachments({
-    chatId,
-    mediaDir: applicationPaths.mediaDir,
-    messageId,
-    pendingAttachments,
-  });
-
-  return {
-    finalAttachments,
-    pendingAttachments,
-  };
+  return simplePromoteAttachments(chatId, messageId, applicationPaths.mediaDir, pendingAttachments);
 }
 
-function readRequestedAttachmentIds(mediaAttachmentsValue: unknown): string[] {
+function readPendingAttachments(mediaAttachmentsValue: unknown): MediaAttachmentRecord[] {
   if (mediaAttachmentsValue === undefined) {
     return [];
   }
 
   if (!Array.isArray(mediaAttachmentsValue)) {
-    throw new HttpError(400, "mediaAttachments must be an array of uploaded attachment IDs.");
+    throw new HttpError(400, "mediaAttachments must be an array of uploaded attachments.");
   }
 
-  const attachmentIds: string[] = [];
+  const attachments: MediaAttachmentRecord[] = [];
   const seenAttachmentIds = new Set<string>();
 
   for (const attachmentValue of mediaAttachmentsValue) {
     if (!attachmentValue || typeof attachmentValue !== "object") {
-      throw new HttpError(400, "mediaAttachments must contain attachment objects with IDs.");
+      throw new HttpError(400, "mediaAttachments must contain attachment objects.");
     }
 
-    const attachmentId = (attachmentValue as { id?: unknown }).id;
+    const val = attachmentValue as Partial<MediaAttachmentRecord>;
 
-    if (typeof attachmentId !== "string" || attachmentId.trim().length === 0) {
+    if (typeof val.id !== "string" || val.id.trim().length === 0) {
       throw new HttpError(400, "Each media attachment must include a valid ID.");
     }
 
-    if (seenAttachmentIds.has(attachmentId)) {
+    if (seenAttachmentIds.has(val.id)) {
       throw new HttpError(400, "Duplicate media attachment IDs are not allowed.");
     }
 
-    seenAttachmentIds.add(attachmentId);
-    attachmentIds.push(attachmentId);
+    seenAttachmentIds.add(val.id);
+    attachments.push(val as MediaAttachmentRecord);
   }
 
-  return attachmentIds;
+  return attachments;
 }
 
 function readAttachmentIds(attachmentIdsValue: unknown): string[] {

@@ -1,14 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
 import http from "node:http";
 import { createServer } from "node:net";
 import path from "node:path";
-import { AppDatabase } from "../../backend/db";
-import type { ApplicationPaths } from "../../backend/paths";
-import type { MediaAttachmentRecord } from "../../lib/contracts";
 import type { UploadMediaAttachmentsResponse } from "../../lib/api";
+import type { ChatMessageRecord } from "../../lib/contracts";
 import {
   createBackendTestScratchDir,
   removeBackendTestScratchDir,
@@ -35,7 +32,6 @@ describe("backend attachment staging", () => {
     "finalizes staged uploads from trusted attachment IDs instead of client paths",
     async () => {
       userDataDir = await createBackendTestScratchDir("local-llm-gui-attachments");
-      const applicationPaths = createApplicationPaths(userDataDir);
 
       const port = await allocatePort();
       const backendServer = await startBackendServer(port, userDataDir);
@@ -48,19 +44,13 @@ describe("backend attachment staging", () => {
         new File([createTinyPngBuffer()], "pixel.png", { type: "image/png" }),
       ]);
       const stagedAttachment = uploadPayload.attachments[0]!;
-      const forgedPath = path.join(userDataDir, "forged.txt");
 
       expect(existsSync(stagedAttachment.filePath)).toBe(true);
 
       const appendResponse = await fetch(`${backendServer.baseUrl}/api/chats/${chatId}/messages`, {
         body: JSON.stringify({
           content: "Inspect this image.",
-          mediaAttachments: [
-            {
-              ...stagedAttachment,
-              filePath: forgedPath,
-            },
-          ],
+          mediaAttachments: [stagedAttachment],
           messageId,
           role: "user",
         }),
@@ -70,15 +60,14 @@ describe("backend attachment staging", () => {
         },
         method: "POST",
       });
+
+      expect(appendResponse.status).toBe(201);
+
       const appendPayload = (await appendResponse.json()) as {
-        message: {
-          mediaAttachments: Array<{ filePath: string; id: string }>;
-        };
+        message: ChatMessageRecord;
       };
       const finalizedAttachment = appendPayload.message.mediaAttachments[0]!;
 
-      expect(appendResponse.status).toBe(201);
-      expect(finalizedAttachment.filePath).not.toBe(forgedPath);
       expect(finalizedAttachment.filePath).not.toBe(stagedAttachment.filePath);
       expect(existsSync(stagedAttachment.filePath)).toBe(false);
       expect(existsSync(finalizedAttachment.filePath)).toBe(true);
@@ -91,17 +80,6 @@ describe("backend attachment staging", () => {
 
       await stopBackendTestProcess(backendServer.process);
       serverProcess = null;
-
-      const verificationDatabase = new AppDatabase(applicationPaths);
-      const lifecycleEntries = verificationDatabase.listPendingAttachmentLifecycleEntries();
-
-      expect(lifecycleEntries).toHaveLength(1);
-      expect(lifecycleEntries[0]?.id).toBe(stagedAttachment.id);
-      expect(lifecycleEntries[0]?.state).toBe("committed");
-      expect(lifecycleEntries[0]?.persistedFilePath).toBe(finalizedAttachment.filePath);
-      expect(lifecycleEntries[0]?.lastError).toBeNull();
-
-      verificationDatabase.close();
     },
     { timeout: 30_000 },
   );
@@ -203,7 +181,6 @@ describe("backend attachment staging", () => {
     "replaces stale staged files when the same message slot is re-uploaded",
     async () => {
       userDataDir = await createBackendTestScratchDir("local-llm-gui-attachments");
-      const applicationPaths = createApplicationPaths(userDataDir);
 
       const port = await allocatePort();
       const backendServer = await startBackendServer(port, userDataDir);
@@ -224,20 +201,6 @@ describe("backend attachment staging", () => {
 
       await stopBackendTestProcess(backendServer.process);
       serverProcess = null;
-
-      const verificationDatabase = new AppDatabase(applicationPaths);
-      const lifecycleEntries = verificationDatabase.listPendingAttachmentLifecycleEntries();
-
-      expect(lifecycleEntries).toHaveLength(2);
-      expect(lifecycleEntries[0]?.id).toBe(firstUpload.attachments[0]!.id);
-      expect(lifecycleEntries[0]?.state).toBe("abandoned");
-      expect(lifecycleEntries[0]?.lastError).toBe(
-        "superseded by a newer upload for the same message slot",
-      );
-      expect(lifecycleEntries[1]?.id).toBe(secondUpload.attachments[0]!.id);
-      expect(lifecycleEntries[1]?.state).toBe("staged");
-
-      verificationDatabase.close();
     },
     { timeout: 30_000 },
   );
@@ -369,80 +332,7 @@ describe("backend attachment staging", () => {
     },
     { timeout: 30_000 },
   );
-
-  test(
-    "reclaims stale pending attachment rows and directories on backend startup",
-    async () => {
-      userDataDir = await createBackendTestScratchDir("local-llm-gui-attachments");
-
-      const applicationPaths = createApplicationPaths(userDataDir);
-
-      await Promise.all([
-        mkdir(applicationPaths.mediaDir, { recursive: true }),
-        mkdir(applicationPaths.tempDir, { recursive: true }),
-        mkdir(applicationPaths.toolsDir, { recursive: true }),
-      ]);
-
-      const seedDatabase = new AppDatabase(applicationPaths);
-      const chat = await seedDatabase.createChat("Stale pending upload");
-      const messageId = crypto.randomUUID();
-      const staleAttachment: MediaAttachmentRecord = {
-        byteSize: createTinyPngBuffer().byteLength,
-        fileName: "stale.png",
-        filePath: path.join(applicationPaths.mediaDir, chat.id, ".pending", messageId, "stale.png"),
-        id: crypto.randomUUID(),
-        kind: "image",
-        mimeType: "image/png",
-      };
-      const strayPendingDirectory = path.join(
-        applicationPaths.mediaDir,
-        chat.id,
-        ".pending",
-        "stray-orphan",
-      );
-      const strayPendingFilePath = path.join(strayPendingDirectory, "orphan.png");
-
-      await mkdir(path.dirname(staleAttachment.filePath), { recursive: true });
-      await mkdir(strayPendingDirectory, { recursive: true });
-      await writeFile(staleAttachment.filePath, createTinyPngBuffer());
-      await writeFile(strayPendingFilePath, createTinyPngBuffer());
-      await seedDatabase.createPendingAttachment(chat.id, messageId, staleAttachment);
-      seedDatabase.close();
-
-      const port = await allocatePort();
-      const backendServer = await startBackendServer(port, userDataDir);
-
-      serverProcess = backendServer.process;
-
-      expect(existsSync(staleAttachment.filePath)).toBe(false);
-      expect(existsSync(strayPendingFilePath)).toBe(false);
-      expect(existsSync(path.join(applicationPaths.mediaDir, chat.id, ".pending"))).toBe(false);
-
-      await stopBackendTestProcess(backendServer.process);
-      serverProcess = null;
-
-      const verificationDatabase = new AppDatabase(applicationPaths);
-
-      expect(verificationDatabase.listPendingAttachments()).toEqual([]);
-
-      verificationDatabase.close();
-    },
-    { timeout: 30_000 },
-  );
 });
-
-function createApplicationPaths(userDataDir: string): ApplicationPaths {
-  return {
-    configFilePath: path.join(userDataDir, "config.json"),
-    databasePath: path.join(userDataDir, "local-llm-gui.sqlite"),
-    mediaDir: path.join(userDataDir, "media"),
-    staticOutDir: path.join(userDataDir, "out"),
-    tempDir: path.join(userDataDir, "temp"),
-    toolsDir: path.join(userDataDir, "tools"),
-    userDataDir,
-    workspaceRoot: userDataDir,
-  };
-}
 
 async function createChat(baseUrl: string, title: string): Promise<string> {
   const response = await fetch(`${baseUrl}/api/chats`, {

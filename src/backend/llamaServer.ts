@@ -71,24 +71,13 @@ const SUPPORTED_CHAT_COMPLETION_FIELDS = new Set<string>([
   "user",
 ]);
 
-/** Priority level for managed requests — `"foreground"` preempts `"background"`. */
-type ManagedRequestPriority = "background" | "foreground";
-
 /**
  * Manages the lifecycle and request proxying for a single `llama-server` child process.
  */
 export class LlamaServerManager {
   private childProcess: ChildProcessByStdio<null, Readable, Readable> | null = null;
-  private activeGenerationAbortController: AbortController | null = null;
-  private activeGenerationChatId: string | null = null;
-  private activeGenerationSettledPromise: Promise<void> | null = null;
   private activeRequestAbortController: AbortController | null = null;
-  private activeRequestPriority: ManagedRequestPriority | null = null;
-  private activeRequestChatId: string | null = null;
-  private activeRequestSettledPromise: Promise<void> | null = null;
   private activeServerBaseUrl: string | null = null;
-  private resolveActiveGenerationSettled: (() => void) | null = null;
-  private resolveActiveRequestSettled: (() => void) | null = null;
   private activeLoadPreset: LoadInferencePreset | null = null;
   private activeModel: ModelRecord | null = null;
   private activeSystemPromptPreset: SystemPromptPreset | null = null;
@@ -139,59 +128,6 @@ export class LlamaServerManager {
   /** Returns the active temporary Jinja override file path, if one is currently in use. */
   public getActiveTemplateFilePath(): string | null {
     return this.templateFilePath;
-  }
-
-  /**
-   * Starts tracking a foreground generation session that may span one or more
-   * upstream requests and local tool-execution turns.
-   *
-   * @param chatId The persisted chat identifier when available.
-   * @param downstreamSignal The client-request abort signal.
-   * @returns A composed abort signal plus a completion callback, or a 409 response when busy.
-   */
-  public beginForegroundGeneration(
-    chatId: string | null,
-    downstreamSignal: AbortSignal,
-  ): { complete: () => void; signal: AbortSignal } {
-    if (this.activeRequestAbortController && this.activeRequestPriority === "background") {
-      const backgroundAbortController = this.activeRequestAbortController;
-      backgroundAbortController.abort();
-      this.clearActiveController(backgroundAbortController);
-    } else if (this.activeGenerationAbortController || this.activeRequestAbortController) {
-      this.debugLogService.serverLog(
-        "A foreground generation was already running; aborting it to prioritize the new request.",
-      );
-      this.abortAndClearActiveControllers();
-    }
-
-    const generationAbortController = new AbortController();
-    const requestAbortController = new AbortController();
-    const abortGeneration = (): void => {
-      generationAbortController.abort();
-      requestAbortController.abort();
-    };
-
-    downstreamSignal.addEventListener("abort", abortGeneration, { once: true });
-    this.activeGenerationAbortController = generationAbortController;
-    this.activeGenerationChatId = chatId;
-    this.activeRequestAbortController = requestAbortController;
-    this.activeRequestPriority = "foreground";
-    this.activeRequestChatId = chatId;
-    this.activeGenerationSettledPromise = new Promise<void>((resolve) => {
-      this.resolveActiveGenerationSettled = resolve;
-    });
-    this.activeRequestSettledPromise = new Promise<void>((resolve) => {
-      this.resolveActiveRequestSettled = resolve;
-    });
-
-    return {
-      complete: () => {
-        downstreamSignal.removeEventListener("abort", abortGeneration);
-        this.clearActiveController(generationAbortController);
-        this.clearActiveController(requestAbortController);
-      },
-      signal: generationAbortController.signal,
-    };
   }
 
   /**
@@ -307,12 +243,11 @@ export class LlamaServerManager {
    */
   public async unload(reason = "requested"): Promise<void> {
     if (!this.childProcess) {
-      const activeGenerationAbortController = this.activeGenerationAbortController;
+      const activeRequestAbortController = this.activeRequestAbortController;
 
-      activeGenerationAbortController?.abort();
-
-      if (activeGenerationAbortController) {
-        this.clearActiveController(activeGenerationAbortController);
+      if (activeRequestAbortController) {
+        activeRequestAbortController.abort();
+        this.activeRequestAbortController = null;
       }
 
       this.activeModel = null;
@@ -337,21 +272,11 @@ export class LlamaServerManager {
     }
 
     this.unloading = true;
-    const activeGenerationAbortController = this.activeGenerationAbortController;
     const activeRequestAbortController = this.activeRequestAbortController;
 
-    activeGenerationAbortController?.abort();
-
-    if (activeGenerationAbortController) {
-      this.clearActiveController(activeGenerationAbortController);
-    }
-
-    if (
-      activeRequestAbortController &&
-      activeRequestAbortController !== activeGenerationAbortController
-    ) {
+    if (activeRequestAbortController) {
       activeRequestAbortController.abort();
-      this.clearActiveController(activeRequestAbortController);
+      this.activeRequestAbortController = null;
     }
 
     this.debugLogService.serverLog(`Unloading llama-server (${reason}).`);
@@ -386,47 +311,15 @@ export class LlamaServerManager {
    *
    * @returns `true` when an in-flight request was aborted.
    */
-  public async stopGeneration(chatId?: string): Promise<boolean> {
-    if (this.activeGenerationAbortController) {
-      if (chatId && this.activeGenerationChatId !== chatId) {
-        return false;
-      }
-
-      const activeGenerationAbortController = this.activeGenerationAbortController;
-      const activeGenerationSettledPromise = this.activeGenerationSettledPromise;
-
-      this.debugLogService.serverLog("Aborting the active generation.");
-      activeGenerationAbortController.abort();
-
-      if (
-        this.activeRequestAbortController &&
-        this.activeRequestAbortController !== activeGenerationAbortController
-      ) {
-        this.activeRequestAbortController.abort();
-      }
-
-      await activeGenerationSettledPromise;
-
+  public async stopGeneration(): Promise<boolean> {
+    if (this.activeRequestAbortController) {
+      this.debugLogService.serverLog("Aborting the active llama-server request.");
+      this.activeRequestAbortController.abort();
+      this.activeRequestAbortController = null;
       return true;
     }
 
-    if (!this.activeRequestAbortController) {
-      return false;
-    }
-
-    if (chatId && this.activeRequestChatId !== chatId) {
-      return false;
-    }
-
-    const activeRequestAbortController = this.activeRequestAbortController;
-    const activeRequestSettledPromise = this.activeRequestSettledPromise;
-
-    this.debugLogService.serverLog("Aborting the active llama-server request.");
-    activeRequestAbortController.abort();
-
-    await activeRequestSettledPromise;
-
-    return true;
+    return false;
   }
 
   /**
@@ -450,7 +343,6 @@ export class LlamaServerManager {
       "/v1/chat/completions",
       preparedRequestBodyResult.body,
       downstreamSignal,
-      "foreground",
       typeof requestBody["chatId"] === "string" ? requestBody["chatId"] : null,
     );
   }
@@ -465,13 +357,11 @@ export class LlamaServerManager {
   public async proxyCompletion(
     requestBody: Record<string, unknown>,
     downstreamSignal: AbortSignal,
-    requestPriority: ManagedRequestPriority = "foreground",
   ): Promise<Response> {
     return this.proxyJsonRequest(
       "/completion",
       requestBody,
       downstreamSignal,
-      requestPriority,
       typeof requestBody["chatId"] === "string" ? requestBody["chatId"] : null,
     );
   }
@@ -493,27 +383,11 @@ export class LlamaServerManager {
    */
   public disposeOnExit(): void {
     this.unloading = true;
-    const activeGenerationAbortController = this.activeGenerationAbortController;
     const activeRequestAbortController = this.activeRequestAbortController;
 
-    activeGenerationAbortController?.abort();
-
-    if (
-      activeRequestAbortController &&
-      activeRequestAbortController !== activeGenerationAbortController
-    ) {
+    if (activeRequestAbortController) {
       activeRequestAbortController.abort();
-    }
-
-    if (activeGenerationAbortController) {
-      this.clearActiveController(activeGenerationAbortController);
-    }
-
-    if (
-      activeRequestAbortController &&
-      activeRequestAbortController !== activeGenerationAbortController
-    ) {
-      this.clearActiveController(activeRequestAbortController);
+      this.activeRequestAbortController = null;
     }
 
     this.activeServerBaseUrl = null;
@@ -573,17 +447,13 @@ export class LlamaServerManager {
    * Proxies an arbitrary JSON request to the active `llama-server` instance,
    * handling both streaming and non-streaming modes.
    *
-   * @param endpoint - Server-relative path (e.g. `"/v1/chat/completions"`).
-   * @param requestBody - JSON body to send.
    * @param downstreamSignal - Client-originated abort signal.
-   * @param requestPriority - Priority level for request scheduling.
    * @returns The proxied response.
    */
   private async proxyJsonRequest(
     endpoint: string,
     requestBody: Record<string, unknown>,
     downstreamSignal: AbortSignal,
-    requestPriority: ManagedRequestPriority,
     chatId: string | null = null,
   ): Promise<Response> {
     if (this.runtimeSnapshot.status !== "ready" || !this.runtimeSnapshot.llamaServerBaseUrl) {
@@ -596,43 +466,11 @@ export class LlamaServerManager {
     }
 
     if (this.activeRequestAbortController) {
-      const activePriority = this.activeRequestPriority;
-      const activeChatId = this.activeRequestChatId;
-
-      if (requestPriority === "foreground" && activePriority === "background") {
-        this.debugLogService.serverLog(
-          "Canceling the active background llama-server request to prioritize foreground work.",
-        );
-
-        const backgroundAbortController = this.activeRequestAbortController;
-        backgroundAbortController.abort();
-        this.clearActiveController(backgroundAbortController);
-      } else {
-        const activeState =
-          activePriority === "foreground"
-            ? "a foreground generation"
-            : "a background llama-server request";
-        const errorMessage =
-          requestPriority === "foreground"
-            ? "Another generation request is already in progress."
-            : "A llama-server request is already in progress; retry after the current request completes.";
-
-        this.debugLogService.verboseServerLog(
-          `Rejecting ${endpoint} because ${activeState} is already in progress.`,
-        );
-
-        return Response.json(
-          {
-            activeChatId,
-            error: errorMessage,
-            retryable: true,
-            state: activePriority === "foreground" ? "running" : "busy",
-          },
-          {
-            status: 409,
-          },
-        );
-      }
+      this.debugLogService.serverLog(
+        "Canceling the active llama-server request to prioritize new work.",
+      );
+      this.activeRequestAbortController.abort();
+      this.activeRequestAbortController = null;
     }
 
     const payload: Record<string, unknown> = {
@@ -640,7 +478,10 @@ export class LlamaServerManager {
     };
     const isStreamingRequest = payload["stream"] === true;
     const requestMessageCount = Array.isArray(payload["messages"]) ? payload["messages"].length : 0;
-    const abortController = this.activeRequestAbortController ?? new AbortController();
+    const abortController = new AbortController();
+
+    this.activeRequestAbortController = abortController;
+
     const abortActiveRequest = (): void => {
       abortController.abort();
     };
@@ -650,7 +491,6 @@ export class LlamaServerManager {
       `Proxying ${isStreamingRequest ? "streaming" : "non-streaming"} request to ${endpoint}${chatId ? ` for chat ${chatId}` : ""} with ${String(requestMessageCount)} message(s).`,
     );
 
-    this.beginActiveRequest(abortController, requestPriority, chatId);
     downstreamSignal.addEventListener("abort", abortActiveRequest, { once: true });
 
     try {
@@ -683,12 +523,19 @@ export class LlamaServerManager {
       try {
         const parsedPayload = JSON.parse(responseText) as unknown;
         this.captureRuntimeMetrics(parsedPayload);
-        this.clearActiveRequest(abortController);
+
+        if (this.activeRequestAbortController === abortController) {
+          this.activeRequestAbortController = null;
+        }
+
         downstreamSignal.removeEventListener("abort", abortActiveRequest);
 
         return Response.json(parsedPayload, { status: upstreamResponse.status });
       } catch {
-        this.clearActiveRequest(abortController);
+        if (this.activeRequestAbortController === abortController) {
+          this.activeRequestAbortController = null;
+        }
+
         downstreamSignal.removeEventListener("abort", abortActiveRequest);
 
         return new Response(responseText, {
@@ -699,7 +546,10 @@ export class LlamaServerManager {
         });
       }
     } catch (error) {
-      this.clearActiveRequest(abortController);
+      if (this.activeRequestAbortController === abortController) {
+        this.activeRequestAbortController = null;
+      }
+
       downstreamSignal.removeEventListener("abort", abortActiveRequest);
 
       if (abortController.signal.aborted) {
@@ -717,77 +567,6 @@ export class LlamaServerManager {
 
       throw error;
     }
-  }
-
-  /** Releases the tracked state for a controller when it settles. */
-  private clearActiveController(abortController: AbortController): void {
-    if (this.activeRequestAbortController === abortController) {
-      this.activeRequestAbortController = null;
-      this.activeRequestPriority = null;
-      this.activeRequestChatId = null;
-      this.activeRequestSettledPromise = null;
-
-      const resolveActiveRequestSettled = this.resolveActiveRequestSettled;
-
-      this.resolveActiveRequestSettled = null;
-      resolveActiveRequestSettled?.();
-    }
-
-    if (this.activeGenerationAbortController === abortController) {
-      this.activeGenerationAbortController = null;
-      this.activeGenerationChatId = null;
-      this.activeGenerationSettledPromise = null;
-
-      const resolveActiveGenerationSettled = this.resolveActiveGenerationSettled;
-
-      this.resolveActiveGenerationSettled = null;
-      resolveActiveGenerationSettled?.();
-    }
-  }
-
-  /** Releases the active request tracking when a controller matches the current one. */
-  private clearActiveRequest(abortController: AbortController): void {
-    this.clearActiveController(abortController);
-  }
-
-  /**
-   * Aborts and clears all active generation and request controllers unconditionally.
-   *
-   * This is used when the child process crashes or exits unexpectedly to ensure
-   * the generation lock is released; without this, subsequent generation requests
-   * would be permanently rejected with 409 Conflict.
-   */
-  private abortAndClearActiveControllers(): void {
-    const activeGenerationAbortController = this.activeGenerationAbortController;
-    const activeRequestAbortController = this.activeRequestAbortController;
-
-    activeGenerationAbortController?.abort();
-
-    if (activeGenerationAbortController) {
-      this.clearActiveController(activeGenerationAbortController);
-    }
-
-    if (
-      activeRequestAbortController &&
-      activeRequestAbortController !== activeGenerationAbortController
-    ) {
-      activeRequestAbortController.abort();
-      this.clearActiveController(activeRequestAbortController);
-    }
-  }
-
-  /** Starts tracking a newly proxied request until its fetch or stream fully unwinds. */
-  private beginActiveRequest(
-    abortController: AbortController,
-    requestPriority: ManagedRequestPriority,
-    chatId: string | null,
-  ): void {
-    this.activeRequestAbortController = abortController;
-    this.activeRequestPriority = requestPriority;
-    this.activeRequestChatId = chatId;
-    this.activeRequestSettledPromise = new Promise<void>((resolve) => {
-      this.resolveActiveRequestSettled = resolve;
-    });
   }
 
   /**
@@ -1288,7 +1067,9 @@ export class LlamaServerManager {
     const upstreamBody = upstreamResponse.body;
 
     if (!upstreamBody) {
-      this.clearActiveRequest(abortController);
+      if (this.activeRequestAbortController === abortController) {
+        this.activeRequestAbortController = null;
+      }
 
       this.debugLogService.verboseServerLog(
         `Streaming response from ${endpoint}${chatId ? ` for chat ${chatId}` : ""} did not include a body.`,
@@ -1385,7 +1166,9 @@ export class LlamaServerManager {
             }
           } finally {
             downstreamSignal.removeEventListener("abort", abortListener);
-            this.clearActiveRequest(abortController);
+            if (this.activeRequestAbortController === abortController) {
+              this.activeRequestAbortController = null;
+            }
           }
         },
       }),
@@ -1617,7 +1400,12 @@ export class LlamaServerManager {
 
       this.childProcess = null;
       this.activeServerBaseUrl = null;
-      this.abortAndClearActiveControllers();
+
+      if (this.activeRequestAbortController) {
+        this.activeRequestAbortController.abort();
+        this.activeRequestAbortController = null;
+      }
+
       this.updateSnapshot({
         status: "error",
         lastError: errorMessage,
@@ -1635,7 +1423,12 @@ export class LlamaServerManager {
       if (!this.unloading) {
         this.childProcess = null;
         this.activeServerBaseUrl = null;
-        this.abortAndClearActiveControllers();
+
+        if (this.activeRequestAbortController) {
+          this.activeRequestAbortController.abort();
+          this.activeRequestAbortController = null;
+        }
+
         this.updateSnapshot({
           status: "error",
           lastError: exitMessage,

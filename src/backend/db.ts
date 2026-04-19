@@ -16,7 +16,7 @@ import type {
   ThinkingTagSettings,
 } from "../lib/contracts";
 import type { ApplicationPaths } from "./paths";
-const SQLITE_BUSY_TIMEOUT_MS = 250;
+const SQLITE_BUSY_TIMEOUT_MS = 10000;
 
 /** SQLite row shape for the `chats` table. */
 interface ChatRow {
@@ -66,23 +66,6 @@ interface LoadPresetRow {
   updated_at: string;
 }
 
-/** SQLite row shape for the `pending_attachments` table. */
-interface PendingAttachmentRow {
-  id: string;
-  chat_id: string;
-  message_id: string | null;
-  message_index: number;
-  kind: MediaAttachmentRecord["kind"];
-  file_name: string;
-  mime_type: string;
-  file_path: string;
-  byte_size: number;
-  created_at: string;
-  state: PendingAttachmentState;
-  persisted_file_path: string | null;
-  last_error: string | null;
-}
-
 /** SQLite row shape for the derived `message_attachments` table. */
 interface MessageAttachmentRow {
   attachment_id: string;
@@ -95,46 +78,7 @@ interface MessageAttachmentRow {
   byte_size: number;
 }
 
-interface AttachmentCleanupJobRow {
-  id: string;
-  chat_id: string;
-  operation: "append" | "edit" | "regenerate";
-  file_paths_json: string;
-  state: AttachmentCleanupJobState;
-  attempt_count: number;
-  last_error: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
-const ATTACHMENT_INDEX_VERSION = "1";
-const SEARCH_INDEX_VERSION = "2";
 const ATTACHMENT_REFERENCE_QUERY_CHUNK_SIZE = 400;
-
-export type PendingAttachmentState = "staged" | "committed" | "cleanup_failed" | "abandoned";
-
-export interface PendingAttachmentLifecycleRecord extends MediaAttachmentRecord {
-  chatId: string;
-  createdAt: string;
-  messageId: string | null;
-  state: PendingAttachmentState;
-  persistedFilePath: string | null;
-  lastError: string | null;
-}
-
-export type AttachmentCleanupJobState = "queued" | "running" | "completed" | "failed";
-
-export interface AttachmentCleanupJobRecord {
-  attemptCount: number;
-  chatId: string;
-  createdAt: string;
-  filePaths: string[];
-  id: string;
-  lastError: string | null;
-  operation: "append" | "edit" | "regenerate";
-  state: AttachmentCleanupJobState;
-  updatedAt: string;
-}
 
 interface FinalizableStatement {
   finalize(): void;
@@ -193,9 +137,6 @@ export class AppDatabase {
     this.database.exec(`PRAGMA busy_timeout = ${String(SQLITE_BUSY_TIMEOUT_MS)};`);
     this.installTrackedQueryHook();
     this.createSchema();
-    this.ensurePendingAttachmentMessageIds();
-    this.ensurePendingAttachmentLifecycleColumns();
-    void this.scheduleDeferredSchemaMaintenance();
   }
 
   /**
@@ -229,7 +170,6 @@ export class AppDatabase {
    * Closes the underlying SQLite connection.
    */
   public close(): void {
-    this.isClosed = true;
     this.finalizeTrackedStatements();
     this.database.close(true);
   }
@@ -574,7 +514,6 @@ export class AppDatabase {
     reasoningTruncated = false,
     metadata: Record<string, unknown> = {},
     messageId: string = crypto.randomUUID(),
-    committedPendingAttachments: MediaAttachmentRecord[] = [],
   ): Promise<ChatMessageRecord> {
     if (!this.chatExists(chatId)) {
       throw new ChatNotFoundError(chatId);
@@ -610,7 +549,6 @@ export class AppDatabase {
         );
 
       this.indexAttachmentsForMessage(chatId, messageId, mediaAttachments);
-      this.markPendingAttachmentsCommittedInTransaction(committedPendingAttachments);
       this.indexMessageForSearch(chatId, content, reasoningContent ?? "");
       this.touchChat(chatId, timestamp);
       this.bumpRevision();
@@ -666,332 +604,6 @@ export class AppDatabase {
     });
 
     return this.getMessage(chatId, messageId);
-  }
-
-  /**
-   * Persists a staged attachment uploaded ahead of message creation.
-   *
-   * @param chatId The owning chat identifier.
-   * @param messageId The reserved message identifier.
-   * @param attachment The staged attachment metadata.
-   */
-  public createPendingAttachment(
-    chatId: string,
-    messageId: string,
-    attachment: MediaAttachmentRecord,
-  ): void {
-    this.database
-      .query(
-        "INSERT INTO pending_attachments (id, chat_id, message_id, message_index, kind, file_name, mime_type, file_path, byte_size, created_at, state, persisted_file_path, last_error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      )
-      .run(
-        attachment.id,
-        chatId,
-        messageId,
-        -1,
-        attachment.kind,
-        attachment.fileName,
-        attachment.mimeType,
-        attachment.filePath,
-        attachment.byteSize,
-        new Date().toISOString(),
-        "staged",
-        null,
-        null,
-      );
-  }
-
-  /**
-   * Resolves staged attachments for the given chat/message pair in the
-   * same order they were requested by the caller.
-   *
-   * @param chatId The owning chat identifier.
-   * @param messageId The reserved message identifier.
-   * @param attachmentIds The staged attachment identifiers.
-   * @returns The resolved staged attachments in request order.
-   */
-  public getPendingAttachments(
-    chatId: string,
-    messageId: string,
-    attachmentIds: string[],
-  ): MediaAttachmentRecord[] {
-    if (attachmentIds.length === 0) {
-      return [];
-    }
-
-    const rows = this.database
-      .query(
-        "SELECT id, chat_id, message_id, message_index, kind, file_name, mime_type, file_path, byte_size, created_at, state, persisted_file_path, last_error FROM pending_attachments WHERE chat_id = ? AND message_id = ? AND state = 'staged'",
-      )
-      .all(chatId, messageId) as PendingAttachmentRow[];
-    const rowsById = new Map(rows.map((row) => [row.id, mapPendingAttachmentRow(row)]));
-
-    return attachmentIds.flatMap((attachmentId) => {
-      const attachment = rowsById.get(attachmentId);
-
-      return attachment ? [attachment] : [];
-    });
-  }
-
-  /**
-   * Lists every staged attachment currently associated with a chat/message pair.
-   *
-   * @param chatId The owning chat identifier.
-   * @param messageId The reserved message identifier.
-   * @returns All staged attachments for that pending message slot.
-   */
-  public listPendingAttachmentsForMessage(
-    chatId: string,
-    messageId: string,
-  ): MediaAttachmentRecord[] {
-    const rows = this.database
-      .query(
-        "SELECT id, chat_id, message_id, message_index, kind, file_name, mime_type, file_path, byte_size, created_at, state, persisted_file_path, last_error FROM pending_attachments WHERE chat_id = ? AND message_id = ? AND state = 'staged'",
-      )
-      .all(chatId, messageId) as PendingAttachmentRow[];
-
-    return rows.map((row) => mapPendingAttachmentRow(row));
-  }
-
-  /**
-   * Lists every staged attachment currently recorded in the pending-attachment table.
-   *
-   * @returns All staged attachments across chats and reserved message slots.
-   */
-  public listPendingAttachments(): MediaAttachmentRecord[] {
-    const rows = this.database
-      .query(
-        "SELECT id, chat_id, message_id, message_index, kind, file_name, mime_type, file_path, byte_size, created_at, state, persisted_file_path, last_error FROM pending_attachments WHERE state = 'staged'",
-      )
-      .all() as PendingAttachmentRow[];
-
-    return rows.map((row) => mapPendingAttachmentRow(row));
-  }
-
-  /**
-   * Lists every pending-attachment lifecycle record for debugging and recovery.
-   *
-   * @returns All lifecycle rows, including committed and recovered attachments.
-   */
-  public listPendingAttachmentLifecycleEntries(): PendingAttachmentLifecycleRecord[] {
-    const rows = this.database
-      .query(
-        "SELECT id, chat_id, message_id, message_index, kind, file_name, mime_type, file_path, byte_size, created_at, state, persisted_file_path, last_error FROM pending_attachments ORDER BY created_at ASC, id ASC",
-      )
-      .all() as PendingAttachmentRow[];
-
-    return rows.map((row) => mapPendingAttachmentLifecycleRow(row));
-  }
-
-  /**
-   * Lists lifecycle rows that still own staged artifacts requiring recovery work.
-   *
-   * @returns Rows whose staged files may still exist on disk.
-   */
-  public listRecoverablePendingAttachments(): PendingAttachmentLifecycleRecord[] {
-    const rows = this.database
-      .query(
-        "SELECT id, chat_id, message_id, message_index, kind, file_name, mime_type, file_path, byte_size, created_at, state, persisted_file_path, last_error FROM pending_attachments WHERE state IN ('staged', 'cleanup_failed') ORDER BY created_at ASC, id ASC",
-      )
-      .all() as PendingAttachmentRow[];
-
-    return rows.map((row) => mapPendingAttachmentLifecycleRow(row));
-  }
-
-  /**
-   * Deletes staged attachment records after finalisation or rollback.
-   *
-   * @param attachmentIds The staged attachment identifiers.
-   */
-  public deletePendingAttachments(attachmentIds: string[]): void {
-    if (attachmentIds.length === 0) {
-      return;
-    }
-
-    const placeholders = attachmentIds.map(() => "?").join(",");
-
-    this.database
-      .query(`DELETE FROM pending_attachments WHERE id IN (${placeholders})`)
-      .run(...attachmentIds);
-  }
-
-  /**
-   * Marks persisted-message pending attachments as committed with their final file paths.
-   *
-   * @param attachments The committed attachment records as stored on the message.
-   */
-  public async markPendingAttachmentsCleanupFailed(
-    attachmentIds: string[],
-    errorMessage: string,
-  ): Promise<void> {
-    if (attachmentIds.length === 0) {
-      return;
-    }
-
-    await this.runInTransactionAsync(() => {
-      for (const attachmentId of attachmentIds) {
-        this.database
-          .query(
-            "UPDATE pending_attachments SET state = 'cleanup_failed', last_error = ? WHERE id = ?",
-          )
-          .run(errorMessage, attachmentId);
-      }
-    });
-  }
-
-  /**
-   * Marks staged lifecycle rows as abandoned after a local rollback or replacement.
-   *
-   * @param attachmentIds The lifecycle rows to mark abandoned.
-   * @param errorMessage Optional descriptive reason for the transition.
-   */
-  public async markPendingAttachmentsAbandoned(
-    attachmentIds: string[],
-    errorMessage: string | null = null,
-  ): Promise<void> {
-    if (attachmentIds.length === 0) {
-      return;
-    }
-
-    await this.runInTransactionAsync(() => {
-      for (const attachmentId of attachmentIds) {
-        this.database
-          .query("UPDATE pending_attachments SET state = 'abandoned', last_error = ? WHERE id = ?")
-          .run(errorMessage, attachmentId);
-      }
-    });
-  }
-
-  /**
-   * Marks recovered lifecycle rows after startup cleanup reclaims stale staged files.
-   *
-   * @param attachmentIds The lifecycle rows that were successfully repaired.
-   */
-  public async markRecoveredPendingAttachments(attachmentIds: string[]): Promise<void> {
-    if (attachmentIds.length === 0) {
-      return;
-    }
-
-    await this.runInTransactionAsync(() => {
-      for (const attachmentId of attachmentIds) {
-        this.database
-          .query(
-            "UPDATE pending_attachments SET state = CASE WHEN state = 'cleanup_failed' THEN 'committed' ELSE 'abandoned' END, last_error = NULL WHERE id = ?",
-          )
-          .run(attachmentId);
-      }
-    });
-  }
-
-  /**
-   * Records a tracked background cleanup job for attachment-file cleanup.
-   *
-   * @param chatId The owning chat identifier.
-   * @param operation The originating mutation type.
-   * @param filePaths The candidate attachment file paths to clean up.
-   * @returns The persisted cleanup job record.
-   */
-  public async createAttachmentCleanupJob(
-    chatId: string,
-    operation: "append" | "edit" | "regenerate",
-    filePaths: string[],
-  ): Promise<AttachmentCleanupJobRecord> {
-    const jobId = crypto.randomUUID();
-    const timestamp = new Date().toISOString();
-
-    await this.runInTransactionAsync(() => {
-      this.database
-        .query(
-          "INSERT INTO attachment_cleanup_jobs (id, chat_id, operation, file_paths_json, state, attempt_count, last_error, created_at, updated_at) VALUES (?, ?, ?, ?, 'queued', 0, NULL, ?, ?)",
-        )
-        .run(jobId, chatId, operation, JSON.stringify(filePaths), timestamp, timestamp);
-    });
-
-    return {
-      attemptCount: 0,
-      chatId,
-      createdAt: timestamp,
-      filePaths,
-      id: jobId,
-      lastError: null,
-      operation,
-      state: "queued",
-      updatedAt: timestamp,
-    };
-  }
-
-  /** Marks an attachment cleanup job as actively running and increments its attempt count. */
-  public async markAttachmentCleanupJobRunning(jobId: string): Promise<void> {
-    const timestamp = new Date().toISOString();
-
-    await this.runInTransactionAsync(() => {
-      this.database
-        .query(
-          "UPDATE attachment_cleanup_jobs SET state = 'running', attempt_count = attempt_count + 1, updated_at = ? WHERE id = ?",
-        )
-        .run(timestamp, jobId);
-    });
-  }
-
-  /** Marks an attachment cleanup job as successfully completed. */
-  public async markAttachmentCleanupJobCompleted(jobId: string): Promise<void> {
-    const timestamp = new Date().toISOString();
-
-    await this.runInTransactionAsync(() => {
-      this.database
-        .query(
-          "UPDATE attachment_cleanup_jobs SET state = 'completed', last_error = NULL, updated_at = ? WHERE id = ?",
-        )
-        .run(timestamp, jobId);
-    });
-  }
-
-  /** Returns an attachment cleanup job to the queued state after a retryable failure. */
-  public async requeueAttachmentCleanupJob(jobId: string, errorMessage: string): Promise<void> {
-    const timestamp = new Date().toISOString();
-
-    await this.runInTransactionAsync(() => {
-      this.database
-        .query(
-          "UPDATE attachment_cleanup_jobs SET state = 'queued', last_error = ?, updated_at = ? WHERE id = ?",
-        )
-        .run(errorMessage, timestamp, jobId);
-    });
-  }
-
-  /** Marks an attachment cleanup job as terminally failed. */
-  public async markAttachmentCleanupJobFailed(jobId: string, errorMessage: string): Promise<void> {
-    const timestamp = new Date().toISOString();
-
-    await this.runInTransactionAsync(() => {
-      this.database
-        .query(
-          "UPDATE attachment_cleanup_jobs SET state = 'failed', last_error = ?, updated_at = ? WHERE id = ?",
-        )
-        .run(errorMessage, timestamp, jobId);
-    });
-  }
-
-  /** Lists all tracked attachment cleanup jobs for diagnostics and tests. */
-  public listAttachmentCleanupJobs(): AttachmentCleanupJobRecord[] {
-    const rows = this.database
-      .query(
-        "SELECT id, chat_id, operation, file_paths_json, state, attempt_count, last_error, created_at, updated_at FROM attachment_cleanup_jobs ORDER BY created_at ASC, id ASC",
-      )
-      .all() as AttachmentCleanupJobRow[];
-
-    return rows.map((row) => mapAttachmentCleanupJobRow(row));
-  }
-
-  /** Returns attachment cleanup jobs left queued or running across process boundaries. */
-  public listIncompleteAttachmentCleanupJobs(): AttachmentCleanupJobRecord[] {
-    const rows = this.database
-      .query(
-        "SELECT id, chat_id, operation, file_paths_json, state, attempt_count, last_error, created_at, updated_at FROM attachment_cleanup_jobs WHERE state IN ('queued', 'running') ORDER BY updated_at ASC, id ASC",
-      )
-      .all() as AttachmentCleanupJobRow[];
-
-    return rows.map((row) => mapAttachmentCleanupJobRow(row));
   }
 
   /**
@@ -1687,27 +1299,9 @@ export class AppDatabase {
 
       CREATE INDEX IF NOT EXISTS idx_messages_chat_sequence ON messages(chat_id, sequence_number);
 
-      CREATE TABLE IF NOT EXISTS pending_attachments (
-        id TEXT PRIMARY KEY,
-        chat_id TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
-        message_id TEXT,
-        message_index INTEGER NOT NULL,
-        kind TEXT NOT NULL,
-        file_name TEXT NOT NULL,
-        mime_type TEXT NOT NULL,
-        file_path TEXT NOT NULL,
-        byte_size INTEGER NOT NULL,
-        created_at TEXT NOT NULL,
-        state TEXT NOT NULL DEFAULT 'staged',
-        persisted_file_path TEXT,
-        last_error TEXT
-      );
 
-      CREATE INDEX IF NOT EXISTS idx_pending_attachments_chat_message
-      ON pending_attachments(chat_id, message_index);
-
-  CREATE INDEX IF NOT EXISTS idx_pending_attachments_chat_message_id
-  ON pending_attachments(chat_id, message_id);
+      DROP TABLE IF EXISTS pending_attachments;
+      DROP TABLE IF EXISTS attachment_cleanup_jobs;
 
       CREATE TABLE IF NOT EXISTS message_attachments (
         attachment_id TEXT NOT NULL,
@@ -1727,20 +1321,6 @@ export class AppDatabase {
       CREATE INDEX IF NOT EXISTS idx_message_attachments_file_path
       ON message_attachments(file_path);
 
-      CREATE TABLE IF NOT EXISTS attachment_cleanup_jobs (
-        id TEXT PRIMARY KEY,
-        chat_id TEXT NOT NULL,
-        operation TEXT NOT NULL,
-        file_paths_json TEXT NOT NULL,
-        state TEXT NOT NULL,
-        attempt_count INTEGER NOT NULL DEFAULT 0,
-        last_error TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_attachment_cleanup_jobs_state
-      ON attachment_cleanup_jobs(state, updated_at);
 
       CREATE TABLE IF NOT EXISTS system_prompt_presets (
         id TEXT PRIMARY KEY,
@@ -1774,8 +1354,6 @@ export class AppDatabase {
     `);
   }
 
-  private isClosed = false;
-
   /** Tracks cached Bun statements so SQLite can be hard-closed on Windows. */
   private installTrackedQueryHook(): void {
     const databaseWithMutableQuery = this.database as Database & {
@@ -1801,99 +1379,6 @@ export class AppDatabase {
     this.trackedStatements.clear();
   }
 
-  /** Ensures upgraded databases can resolve pending attachments by message UUID. */
-  private ensurePendingAttachmentMessageIds(): void {
-    const columns = this.database.query("PRAGMA table_info(pending_attachments)").all() as Array<{
-      name: string;
-    }>;
-
-    if (!columns.some((column) => column.name === "message_id")) {
-      this.database.exec("ALTER TABLE pending_attachments ADD COLUMN message_id TEXT;");
-    }
-
-    this.database.exec(`
-      CREATE INDEX IF NOT EXISTS idx_pending_attachments_chat_message_id
-      ON pending_attachments(chat_id, message_id);
-    `);
-  }
-
-  /** Ensures upgraded databases have lifecycle-state columns for staged attachments. */
-  private ensurePendingAttachmentLifecycleColumns(): void {
-    const columns = this.database.query("PRAGMA table_info(pending_attachments)").all() as Array<{
-      name: string;
-    }>;
-
-    if (!columns.some((column) => column.name === "state")) {
-      this.database.exec(
-        "ALTER TABLE pending_attachments ADD COLUMN state TEXT NOT NULL DEFAULT 'staged';",
-      );
-    }
-
-    if (!columns.some((column) => column.name === "persisted_file_path")) {
-      this.database.exec("ALTER TABLE pending_attachments ADD COLUMN persisted_file_path TEXT;");
-    }
-
-    if (!columns.some((column) => column.name === "last_error")) {
-      this.database.exec("ALTER TABLE pending_attachments ADD COLUMN last_error TEXT;");
-    }
-  }
-
-  /** Repairs the derived attachment lookup table for upgraded databases. */
-  private async ensureMessageAttachmentIndex(): Promise<void> {
-    const versionRow = this.database
-      .query("SELECT value FROM meta WHERE key = 'attachment_index_version'")
-      .get() as { value: string } | null;
-
-    if (versionRow?.value === ATTACHMENT_INDEX_VERSION) {
-      return;
-    }
-
-    await this.runInTransactionAsync(() => {
-      this.rebuildEntireAttachmentIndex();
-      this.database
-        .query("INSERT OR REPLACE INTO meta (key, value) VALUES ('attachment_index_version', ?)")
-        .run(ATTACHMENT_INDEX_VERSION);
-    });
-  }
-
-  /** Schedules expensive schema maintenance asynchronously after startup. */
-  private async scheduleDeferredSchemaMaintenance(): Promise<void> {
-    await Promise.resolve();
-
-    if (this.isClosed) {
-      return;
-    }
-
-    try {
-      await this.ensureMessageAttachmentIndex();
-      await this.ensureSearchIndexVersion();
-    } catch (error) {
-      if (this.isClosed && error instanceof Error && error.message.includes("closed database")) {
-        return;
-      }
-
-      console.error("Deferred database schema maintenance failed:", error);
-    }
-  }
-
-  /** Repairs legacy search-index contents when the derived schema changes. */
-  private async ensureSearchIndexVersion(): Promise<void> {
-    const versionRow = this.database
-      .query("SELECT value FROM meta WHERE key = 'search_index_version'")
-      .get() as { value: string } | null;
-
-    if (versionRow?.value === SEARCH_INDEX_VERSION) {
-      return;
-    }
-
-    await this.runInTransactionAsync(() => {
-      this.rebuildEntireSearchIndex();
-      this.database
-        .query("INSERT OR REPLACE INTO meta (key, value) VALUES ('search_index_version', ?)")
-        .run(SEARCH_INDEX_VERSION);
-    });
-  }
-
   /** Increments the monotonic `db_revision` counter in the `meta` table. */
   private bumpRevision(): void {
     const nextRevision = this.getRevision() + 1;
@@ -1901,42 +1386,6 @@ export class AppDatabase {
     this.database
       .query("UPDATE meta SET value = ? WHERE key = 'db_revision'")
       .run(String(nextRevision));
-  }
-
-  /** Rebuilds the derived attachment lookup table from canonical messages. */
-  private rebuildEntireAttachmentIndex(): void {
-    this.database.query("DELETE FROM message_attachments").run();
-
-    const rows = this.database
-      .query(
-        "SELECT id, chat_id, attachments_json FROM messages WHERE attachments_json != '[]' ORDER BY chat_id ASC, sequence_number ASC",
-      )
-      .all() as Array<{ attachments_json: string; chat_id: string; id: string }>;
-
-    for (const row of rows) {
-      this.indexAttachmentsForMessage(
-        row.chat_id,
-        row.id,
-        parseMessageAttachments(row.attachments_json),
-      );
-    }
-  }
-
-  /** Rebuilds the search index for every persisted chat and message. */
-  private rebuildEntireSearchIndex(): void {
-    this.database.query("DELETE FROM chat_search_fts").run();
-
-    this.database
-      .query(
-        "INSERT INTO chat_search_fts (chat_id, title, message_content, reasoning_content) SELECT id, title, '', '' FROM chats ORDER BY created_at ASC",
-      )
-      .run();
-
-    this.database
-      .query(
-        "INSERT INTO chat_search_fts (chat_id, title, message_content, reasoning_content) SELECT chat_id, '', content, COALESCE(reasoning_content, '') FROM messages ORDER BY chat_id ASC, sequence_number ASC",
-      )
-      .run();
   }
 
   /** Rebuilds the search index rows for one chat from canonical chat/message tables. */
@@ -2010,17 +1459,6 @@ export class AppDatabase {
   /** Runs a callback inside a write transaction using native SQLite locking. */
   private async runInTransactionAsync<T>(callback: () => T): Promise<T> {
     return this.database.transaction(callback)();
-  }
-
-  /** Records committed attachment lifecycle state inside the surrounding write transaction. */
-  private markPendingAttachmentsCommittedInTransaction(attachments: MediaAttachmentRecord[]): void {
-    for (const attachment of attachments) {
-      this.database
-        .query(
-          "UPDATE pending_attachments SET state = 'committed', persisted_file_path = ?, last_error = NULL WHERE id = ?",
-        )
-        .run(attachment.filePath, attachment.id);
-    }
   }
 
   /** Returns the next available sequence number for messages in a chat. */
@@ -2115,52 +1553,6 @@ function mapMessageAttachmentRow(row: MessageAttachmentRow): MediaAttachmentReco
   };
 }
 
-/** Maps a raw `pending_attachments` row to a staged attachment record. */
-function mapPendingAttachmentRow(row: PendingAttachmentRow): MediaAttachmentRecord {
-  return {
-    id: row.id,
-    kind: row.kind,
-    fileName: row.file_name,
-    mimeType: row.mime_type,
-    filePath: row.file_path,
-    byteSize: row.byte_size,
-  };
-}
-
-/** Maps a raw `pending_attachments` row to a lifecycle record. */
-function mapPendingAttachmentLifecycleRow(
-  row: PendingAttachmentRow,
-): PendingAttachmentLifecycleRecord {
-  return {
-    id: row.id,
-    chatId: row.chat_id,
-    createdAt: row.created_at,
-    messageId: row.message_id,
-    kind: row.kind,
-    fileName: row.file_name,
-    mimeType: row.mime_type,
-    filePath: row.file_path,
-    byteSize: row.byte_size,
-    state: row.state,
-    persistedFilePath: row.persisted_file_path,
-    lastError: row.last_error,
-  };
-}
-
-function mapAttachmentCleanupJobRow(row: AttachmentCleanupJobRow): AttachmentCleanupJobRecord {
-  return {
-    attemptCount: row.attempt_count,
-    chatId: row.chat_id,
-    createdAt: row.created_at,
-    filePaths: JSON.parse(row.file_paths_json) as string[],
-    id: row.id,
-    lastError: row.last_error,
-    operation: row.operation,
-    state: row.state,
-    updatedAt: row.updated_at,
-  };
-}
-
 /** Maps a raw `system_prompt_presets` row to a {@link SystemPromptPreset} contract object. */
 function mapSystemPresetRow(row: PresetRow): SystemPromptPreset {
   const systemPromptPreset: SystemPromptPreset = {
@@ -2227,7 +1619,7 @@ function deriveThinkingTags(model: ModelRecord): ThinkingTagSettings {
 /** Builds the default load/inference settings for a model based on its metadata and hardware. */
 function createDefaultLoadInferenceSettings(model: ModelRecord): LoadInferenceSettings {
   return {
-    contextLength: model.contextLength / 8 ?? 4096,
+    contextLength: model.contextLength ? Math.floor(model.contextLength / 8) : 4096,
     gpuLayers: 0,
     cpuThreads: Math.max(1, Math.floor(os.cpus().length / 2)),
     batchSize: 2048,
