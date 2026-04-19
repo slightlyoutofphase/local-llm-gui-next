@@ -2227,18 +2227,18 @@ function deriveThinkingTags(model: ModelRecord): ThinkingTagSettings {
 /** Builds the default load/inference settings for a model based on its metadata and hardware. */
 function createDefaultLoadInferenceSettings(model: ModelRecord): LoadInferenceSettings {
   return {
-    contextLength: model.contextLength ?? 4096,
+    contextLength: model.contextLength / 8 ?? 4096,
     gpuLayers: 0,
     cpuThreads: Math.max(1, Math.floor(os.cpus().length / 2)),
     batchSize: 2048,
     ubatchSize: 512,
     kvCacheTypeK: "f16",
     kvCacheTypeV: "f16",
-    unifiedKvCache: false,
+    unifiedKvCache: true,
     offloadKvCache: true,
     useMmap: true,
-    keepModelInMemory: false,
-    flashAttention: false,
+    keepModelInMemory: true,
+    flashAttention: true,
     fullSwaCache: false,
     contextShift: false,
     seed: -1,
@@ -2249,7 +2249,7 @@ function createDefaultLoadInferenceSettings(model: ModelRecord): LoadInferenceSe
     topK: model.defaultSampling.topK ?? 40,
     topP: model.defaultSampling.topP ?? 0.95,
     minP: model.defaultSampling.minP ?? 0.05,
-    presencePenalty: 0,
+    presencePenalty: 0.0,
     repeatPenalty: model.defaultSampling.repeatPenalty ?? 1.1,
     structuredOutputMode: "off",
   };
