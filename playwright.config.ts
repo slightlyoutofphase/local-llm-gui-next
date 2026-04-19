@@ -1,7 +1,7 @@
 import path from "node:path";
 import { defineConfig } from "@playwright/test";
 
-const frontendPort = "3100";
+const frontendPort = "3000";
 const backendPort = "4000";
 const baseUrl = `http://127.0.0.1:${frontendPort}`;
 

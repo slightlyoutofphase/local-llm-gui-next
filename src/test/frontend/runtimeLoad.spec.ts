@@ -30,14 +30,21 @@ test("advances the real model load bar above zero before the runtime becomes rea
     .toBe(200);
 
   const configResponse = await request.put(`${BACKEND_BASE_URL}/api/config`, {
-    data: {
+    headers: {
+      Origin: "http://127.0.0.1:3000",
+    },
+    json: {
       llamaServerPath: TARGET_LLAMA_SERVER_PATH,
       modelsPath: TARGET_MODELS_PATH,
     },
   });
 
   expect(configResponse.ok()).toBe(true);
-  await request.post(`${BACKEND_BASE_URL}/api/models/unload`);
+  await request.post(`${BACKEND_BASE_URL}/api/models/unload`, {
+    headers: {
+      Origin: "http://127.0.0.1:3000",
+    },
+  });
 
   await page.goto("/");
 
@@ -105,5 +112,9 @@ test("advances the real model load bar above zero before the runtime becomes rea
   expect(readyRuntimeSnapshot.loadProgress).toBe(100);
   await expect(progressLabel).toBeHidden({ timeout: 30_000 });
 
-  await request.post(`${BACKEND_BASE_URL}/api/models/unload`);
+  await request.post(`${BACKEND_BASE_URL}/api/models/unload`, {
+    headers: {
+      Origin: "http://127.0.0.1:3000",
+    },
+  });
 });

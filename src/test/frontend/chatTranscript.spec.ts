@@ -3,7 +3,10 @@ import { expect, test } from "@playwright/test";
 test("renders markdown transcript content and branches a chat", async ({ page, request }) => {
   const chatTitle = `Renderer ${crypto.randomUUID().slice(0, 8)}`;
   const createChatResponse = await request.post("/api/chats", {
-    data: {
+    headers: {
+      Origin: "http://127.0.0.1:3000",
+    },
+    json: {
       title: chatTitle,
     },
   });
@@ -18,7 +21,10 @@ test("renders markdown transcript content and branches a chat", async ({ page, r
   const appendMessageResponse = await request.post(
     `/api/chats/${createChatPayload.chat.id}/messages`,
     {
-      data: {
+      headers: {
+        Origin: "http://127.0.0.1:3000",
+      },
+      json: {
         content: [
           "# Render Check",
           "",
@@ -67,7 +73,10 @@ test("serves persisted image and audio attachments from transcript media URLs", 
 }) => {
   const chatTitle = `Media ${crypto.randomUUID().slice(0, 8)}`;
   const createChatResponse = await request.post("/api/chats", {
-    data: {
+    headers: {
+      Origin: "http://127.0.0.1:3000",
+    },
+    json: {
       title: chatTitle,
     },
   });
@@ -81,6 +90,9 @@ test("serves persisted image and audio attachments from transcript media URLs", 
   };
   const chatId = createChatPayload.chat.id;
   const imageUploadResponse = await request.post("/api/media/upload", {
+    headers: {
+      Origin: "http://127.0.0.1:3000",
+    },
     multipart: {
       chatId,
       files: {
@@ -105,6 +117,9 @@ test("serves persisted image and audio attachments from transcript media URLs", 
   };
 
   const audioUploadResponse = await request.post("/api/media/upload", {
+    headers: {
+      Origin: "http://127.0.0.1:3000",
+    },
     multipart: {
       chatId,
       files: {
@@ -127,7 +142,10 @@ test("serves persisted image and audio attachments from transcript media URLs", 
     attachments: Array<{ id: string }>;
   };
   const appendImageMessageResponse = await request.post(`/api/chats/${chatId}/messages`, {
-    data: {
+    headers: {
+      Origin: "http://127.0.0.1:3000",
+    },
+    json: {
       content: "Image playback check",
       mediaAttachments: imageUploadPayload.attachments,
       role: "user",
@@ -137,7 +155,10 @@ test("serves persisted image and audio attachments from transcript media URLs", 
   expect(appendImageMessageResponse.ok()).toBe(true);
 
   const appendAudioMessageResponse = await request.post(`/api/chats/${chatId}/messages`, {
-    data: {
+    headers: {
+      Origin: "http://127.0.0.1:3000",
+    },
+    json: {
       content: "Audio playback check",
       mediaAttachments: audioUploadPayload.attachments,
       role: "user",
