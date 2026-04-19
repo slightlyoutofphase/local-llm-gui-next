@@ -16,17 +16,7 @@ import type {
   ThinkingTagSettings,
 } from "../lib/contracts";
 import type { ApplicationPaths } from "./paths";
-import {
-  type SqliteBeginBlockedEvent,
-  runSqliteTransactionWithRetryAsync,
-  type SqliteBusyRetryEvent,
-  SQLITE_BUSY_TIMEOUT_MS,
-} from "./sqliteBusyRetry";
-
-interface AppDatabaseOptions {
-  onSqliteBeginBlocked?: (event: SqliteBeginBlockedEvent) => void;
-  onSqliteBusyRetry?: (event: SqliteBusyRetryEvent) => void;
-}
+const SQLITE_BUSY_TIMEOUT_MS = 250;
 
 /** SQLite row shape for the `chats` table. */
 interface ChatRow {
@@ -194,10 +184,7 @@ export class AppDatabase {
    *
    * @param applicationPaths The resolved application path bundle.
    */
-  public constructor(
-    applicationPaths: ApplicationPaths,
-    private readonly options: AppDatabaseOptions = {},
-  ) {
+  public constructor(applicationPaths: ApplicationPaths) {
     if (!existsSync(path.dirname(applicationPaths.databasePath))) {
       mkdirSync(path.dirname(applicationPaths.databasePath), { recursive: true });
     }
@@ -2020,26 +2007,9 @@ export class AppDatabase {
       .run(chatId, content, reasoningContent);
   }
 
-  /** Runs a callback inside a write transaction and yields the thread on lock retries. */
+  /** Runs a callback inside a write transaction using native SQLite locking. */
   private async runInTransactionAsync<T>(callback: () => T): Promise<T> {
-    const retryOptions = {
-      begin: () => {
-        this.database.exec("BEGIN IMMEDIATE");
-      },
-      commit: () => {
-        this.database.exec("COMMIT");
-      },
-      execute: callback,
-      rollback: () => {
-        this.database.exec("ROLLBACK");
-      },
-      ...(this.options.onSqliteBeginBlocked
-        ? { onBeginBlocked: this.options.onSqliteBeginBlocked }
-        : {}),
-      ...(this.options.onSqliteBusyRetry ? { onBusyRetry: this.options.onSqliteBusyRetry } : {}),
-    };
-
-    return await runSqliteTransactionWithRetryAsync(retryOptions);
+    return this.database.transaction(callback)();
   }
 
   /** Records committed attachment lifecycle state inside the surrounding write transaction. */

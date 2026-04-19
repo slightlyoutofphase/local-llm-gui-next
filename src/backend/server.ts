@@ -134,18 +134,7 @@ async function startServer(): Promise<void> {
   debugLogService = new DebugLogService({
     persistenceFilePath: path.join(applicationPaths.userDataDir, "debug-log.json"),
   });
-  database = new AppDatabase(applicationPaths, {
-    onSqliteBeginBlocked: (event) => {
-      debugLogService.serverLog(
-        `SQLite lock pressure: write-transaction begin attempt ${String(event.attempt)}/${String(event.maxRetries + 1)} waited ${String(event.elapsedMs)}ms before acquiring the lock.`,
-      );
-    },
-    onSqliteBusyRetry: (event) => {
-      debugLogService.serverLog(
-        `SQLite lock pressure: busy write-transaction begin retry ${String(event.attempt)}/${String(event.maxRetries)} after ${String(event.delayMs)}ms backoff.`,
-      );
-    },
-  });
+  database = new AppDatabase(applicationPaths);
   embeddedStaticAssets = developmentProxyMode ? new Map() : await createEmbeddedStaticAssetMap();
   scanner = new ModelScanner(database, debugLogService);
   toolRegistry = new LocalToolRegistry(applicationPaths, configStore, debugLogService);
@@ -1791,10 +1780,6 @@ async function runWithForegroundGenerationSession(
   operation: (signal: AbortSignal) => Promise<Response>,
 ): Promise<Response> {
   const generationSession = llamaServerManager.beginForegroundGeneration(chatId, downstreamSignal);
-
-  if (generationSession instanceof Response) {
-    return generationSession;
-  }
 
   try {
     const response = await operation(generationSession.signal);

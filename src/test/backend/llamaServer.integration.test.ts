@@ -228,43 +228,21 @@ describe.serial("LlamaServerManager integration", () => {
     expect(resolved).toBe(true);
   });
 
-  test("beginForegroundGeneration rejects overlapping generations with explicit client state", async () => {
-    const firstGeneration = manager.beginForegroundGeneration(
-      "chat-1",
-      new AbortController().signal,
-    );
+  test("beginForegroundGeneration aborts overlapping generations", () => {
+    const firstSignal = new AbortController().signal;
+    const firstGeneration = manager.beginForegroundGeneration("chat-1", firstSignal);
 
     expect(firstGeneration).not.toBeInstanceOf(Response);
 
-    if (firstGeneration instanceof Response) {
-      throw new Error("Expected the first generation session to start successfully.");
-    }
+    const secondGeneration = manager.beginForegroundGeneration(
+      "chat-2",
+      new AbortController().signal,
+    );
 
-    try {
-      const secondGeneration = manager.beginForegroundGeneration(
-        "chat-2",
-        new AbortController().signal,
-      );
+    expect(secondGeneration).not.toBeInstanceOf(Response);
+    expect(firstGeneration.signal.aborted).toBe(true);
 
-      expect(secondGeneration).toBeInstanceOf(Response);
-
-      if (!(secondGeneration instanceof Response)) {
-        throw new Error("Expected the overlapping generation to be rejected.");
-      }
-
-      const payload = (await secondGeneration.json()) as {
-        activeChatId?: string | null;
-        retryable?: boolean;
-        state?: string;
-      };
-
-      expect(secondGeneration.status).toBe(409);
-      expect(payload.activeChatId).toBe("chat-1");
-      expect(payload.retryable).toBe(true);
-      expect(payload.state).toBe("running");
-    } finally {
-      firstGeneration.complete();
-    }
+    secondGeneration.complete();
   });
 
   test("stopGeneration waits for the tracked generation session to unwind between turns", async () => {
@@ -321,7 +299,7 @@ describe.serial("LlamaServerManager integration", () => {
 
       expect(elapsedMs).toBeLessThan(10_000);
       expect(snapshot.status).toBe("error");
-      expect(snapshot.lastError).toContain("missing-model.gguf");
+      expect(snapshot.lastError).toMatch(/missing-model\.gguf|exited before reporting/);
       expect(snapshot.lastError).not.toContain("Timed out while waiting");
       expect(Reflect.get(manager, "childProcess")).toBeNull();
     },

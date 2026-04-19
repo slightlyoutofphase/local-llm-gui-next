@@ -1,7 +1,7 @@
 "use client";
 
 import { Template } from "@huggingface/jinja";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import type { ReactElement } from "react";
 import type {
   ContextOverflowStrategy,
@@ -126,16 +126,24 @@ export function PresetEditorDialog({
       loadPresets.find((preset) => preset.id === selectedLoadPresetId) ?? loadPresets[0] ?? null,
     [loadPresets, selectedLoadPresetId],
   );
+  const [prevSelectedSystemPreset, setPrevSelectedSystemPreset] =
+    useState<SystemPromptPreset | null>(selectedSystemPreset);
   const [systemDraft, setSystemDraft] = useState<SystemPromptPreset | null>(selectedSystemPreset);
+
+  if (selectedSystemPreset !== prevSelectedSystemPreset) {
+    setPrevSelectedSystemPreset(selectedSystemPreset);
+    setSystemDraft(selectedSystemPreset);
+  }
+
+  const [prevSelectedLoadPreset, setPrevSelectedLoadPreset] = useState<LoadInferencePreset | null>(
+    selectedLoadPreset,
+  );
   const [loadDraft, setLoadDraft] = useState<LoadInferencePreset | null>(selectedLoadPreset);
 
-  useEffect(() => {
-    setSystemDraft(selectedSystemPreset);
-  }, [selectedSystemPreset]);
-
-  useEffect(() => {
+  if (selectedLoadPreset !== prevSelectedLoadPreset) {
+    setPrevSelectedLoadPreset(selectedLoadPreset);
     setLoadDraft(selectedLoadPreset);
-  }, [selectedLoadPreset]);
+  }
 
   const enabledTools = useMemo(() => tools.filter((tool) => tool.enabled), [tools]);
   const activeTemplateText =

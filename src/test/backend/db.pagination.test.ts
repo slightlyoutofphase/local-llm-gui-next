@@ -3,7 +3,7 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { AppDatabase } from "../../backend/db";
 import type { ApplicationPaths } from "../../backend/paths";
-import { SQLITE_BUSY_TIMEOUT_MS } from "../../backend/sqliteBusyRetry";
+
 import { createBackendTestScratchDir, removeBackendTestScratchDir } from "./testScratch";
 
 interface AppDatabaseProbe {
@@ -104,6 +104,6 @@ describe.serial("AppDatabase chat pagination", () => {
     const pragmaRow = databaseHandle.query("PRAGMA busy_timeout").get();
     const busyTimeout = pragmaRow ? Object.values(pragmaRow)[0] : null;
 
-    expect(busyTimeout).toBe(SQLITE_BUSY_TIMEOUT_MS);
+    expect(busyTimeout).toBe(250);
   }, 15_000);
 });

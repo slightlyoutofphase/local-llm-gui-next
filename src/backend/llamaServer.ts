@@ -82,7 +82,6 @@ export class LlamaServerManager {
   private activeGenerationAbortController: AbortController | null = null;
   private activeGenerationChatId: string | null = null;
   private activeGenerationSettledPromise: Promise<void> | null = null;
-  private activeGenerationStopping = false;
   private activeRequestAbortController: AbortController | null = null;
   private activeRequestPriority: ManagedRequestPriority | null = null;
   private activeRequestChatId: string | null = null;
@@ -153,25 +152,16 @@ export class LlamaServerManager {
   public beginForegroundGeneration(
     chatId: string | null,
     downstreamSignal: AbortSignal,
-  ): { complete: () => void; signal: AbortSignal } | Response {
+  ): { complete: () => void; signal: AbortSignal } {
     if (this.activeRequestAbortController && this.activeRequestPriority === "background") {
       const backgroundAbortController = this.activeRequestAbortController;
       backgroundAbortController.abort();
       this.clearActiveController(backgroundAbortController);
-    }
-
-    if (this.activeGenerationAbortController) {
-      return Response.json(
-        {
-          activeChatId: this.activeGenerationChatId,
-          error: "Another generation request is already in progress.",
-          retryable: true,
-          state: this.activeGenerationStopping ? "stopping" : "running",
-        },
-        {
-          status: 409,
-        },
+    } else if (this.activeGenerationAbortController || this.activeRequestAbortController) {
+      this.debugLogService.serverLog(
+        "A foreground generation was already running; aborting it to prioritize the new request.",
       );
+      this.abortAndClearActiveControllers();
     }
 
     const generationAbortController = new AbortController();
@@ -187,7 +177,6 @@ export class LlamaServerManager {
     this.activeRequestAbortController = requestAbortController;
     this.activeRequestPriority = "foreground";
     this.activeRequestChatId = chatId;
-    this.activeGenerationStopping = false;
     this.activeGenerationSettledPromise = new Promise<void>((resolve) => {
       this.resolveActiveGenerationSettled = resolve;
     });
@@ -406,7 +395,6 @@ export class LlamaServerManager {
       const activeGenerationAbortController = this.activeGenerationAbortController;
       const activeGenerationSettledPromise = this.activeGenerationSettledPromise;
 
-      this.activeGenerationStopping = true;
       this.debugLogService.serverLog("Aborting the active generation.");
       activeGenerationAbortController.abort();
 
@@ -749,7 +737,6 @@ export class LlamaServerManager {
       this.activeGenerationAbortController = null;
       this.activeGenerationChatId = null;
       this.activeGenerationSettledPromise = null;
-      this.activeGenerationStopping = false;
 
       const resolveActiveGenerationSettled = this.resolveActiveGenerationSettled;
 
